@@ -1,0 +1,869 @@
+@import '../assets/styles/variables.css';
+
+/* 最外层容器 - 赛博终端背景 + 荧光绿网格 */
+.crt-container {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    /* 中心光晕 */
+    radial-gradient(ellipse at 50% 50%, rgba(34, 197, 94, 0.06) 0%, transparent 55%),
+    /* 水平网格线 */
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 39px,
+      rgba(34, 197, 94, 0.12) 39px,
+      rgba(34, 197, 94, 0.12) 40px
+    ),
+    /* 垂直网格线 */
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 39px,
+      rgba(34, 197, 94, 0.12) 39px,
+      rgba(34, 197, 94, 0.12) 40px
+    ),
+    /* 底部渐变 */
+    linear-gradient(180deg, #000000 0%, #050510 40%, #0a0a15 100%);
+  padding: 60px 40px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  overflow: hidden;
+}
+
+/* 网格光晕叠加 */
+.crt-container::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(ellipse at 50% 50%, transparent 35%, rgba(0,0,0,0.45) 100%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 开机动画 - 简化设计 */
+.boot-screen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(145deg, #0a0a0f 0%, #08080d 50%, #050508 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  border-radius: 20px;
+  box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.8);
+}
+
+.boot-animation {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 20px;
+}
+
+.boot-pixel {
+  width: 10px;
+  height: 12px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 1px;
+  transition: background-color 0.08s ease, box-shadow 0.08s ease;
+}
+
+.boot-pixel.active {
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+}
+
+.boot-text {
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  color: #22c55e;
+  letter-spacing: 2px;
+  animation: blink 0.8s infinite;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0.4; }
+}
+
+/* ========== CRT 显示器外壳 - 立体赛博朋克 ========== */
+.crt {
+  width: 95%;
+  max-width: 1080px;
+  background:
+    /* 外壳材质微弧度 */
+    radial-gradient(ellipse at 50% 30%, #1f1f35 0%, #1a1a2a 40%, #151525 100%);
+  border-radius: 28px;
+  padding: 0;
+  position: relative;
+  z-index: 1;
+  box-shadow:
+    /* 外壳 3D 厚度 - 顶边高光 */
+    0 -1px 0 rgba(255, 255, 255, 0.04),
+    /* 外壳投影 */
+    0 20px 60px rgba(0, 0, 0, 0.6),
+    /* 底部深影 */
+    0 80px 120px rgba(0, 0, 0, 0.8),
+    /* 赛博绿色外发光 */
+    0 0 60px rgba(34, 197, 94, 0.08),
+    0 0 120px rgba(34, 197, 94, 0.04);
+  overflow: hidden;
+  margin-top: -20px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 外壳顶部高光棱线 */
+.crt::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 28px;
+  right: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06) 20%, rgba(255,255,255,0.06) 80%, transparent);
+  z-index: 10;
+  pointer-events: none;
+}
+
+/* ========== 屏幕边框 - 深凹立体 ========== */
+.crt-frame {
+  width: calc(100% - 40px);
+  height: calc(100vh - 200px);
+  min-height: 500px;
+  background: #151525;
+  border-radius: 20px;
+  padding: 20px;
+  position: relative;
+  box-shadow:
+    /* 边框凸起棱 - 顶部亮边 */
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    /* 边框凸起棱 - 底部暗边 */
+    inset 0 -2px 0 rgba(0, 0, 0, 0.5),
+    /* 屏幕凹陷阴影 - 从上到下加深 */
+    inset 0 8px 40px rgba(0, 0, 0, 0.7),
+    inset 0 0 100px rgba(0, 0, 0, 0.5),
+    inset 0 -50px 100px rgba(0, 0, 0, 0.7),
+    /* 四角暗角 */
+    inset 20px 20px 60px rgba(0, 0, 0, 0.4),
+    inset -20px 20px 60px rgba(0, 0, 0, 0.4),
+    /* 赛博微光边框 */
+    inset 0 0 30px rgba(34, 197, 94, 0.04);
+  overflow: hidden;
+  flex-shrink: 0;
+  margin: 0 20px;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+
+/* 品牌标识 */
+.crt-frame::after {
+  content: 'AI INTERVIEW SYSTEM v1.0';
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: rgba(34, 197, 94, 0.4);
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  z-index: 200;
+  pointer-events: none;
+  text-shadow: 0 0 6px rgba(34, 197, 94, 0.3);
+}
+
+/* ========== 显示屏玻璃 ========== */
+.crt-screen {
+  width: 100%;
+  height: 100%;
+  background:
+    /* 屏幕曲率反光 */
+    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.03) 0%, transparent 60%),
+    /* 屏幕底色 */
+    #020203;
+  border-radius: 12px;
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    /* 玻璃边缘暗角 */
+    inset 0 0 40px rgba(0, 0, 0, 0.7),
+    /* 底部反光 */
+    inset 0 -60px 40px rgba(0, 0, 0, 0.5),
+    /* 赛博微光 */
+    inset 0 0 20px rgba(34, 197, 94, 0.03);
+}
+
+/* ========== 扫描线 ========== */
+.crt-scanlines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* 屏幕玻璃反光条 */
+.crt-screen::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.015) 0%, transparent 100%);
+  border-radius: 12px 12px 0 0;
+  pointer-events: none;
+  z-index: 99;
+}
+
+/* ========== 底部控制面板 ========== */
+.crt-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 14px 48px;
+  background:
+    radial-gradient(ellipse at 50% 100%, #181828 0%, #1a1a2a 100%);
+  border-radius: 0 0 28px 28px;
+  position: relative;
+  box-shadow:
+    /* 面板顶部棱线 */
+    inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+/* 面板装饰 - 散热孔 */
+.crt-controls::before {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 48px;
+  right: 48px;
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 3px,
+    rgba(255,255,255,0.03) 3px,
+    rgba(255,255,255,0.03) 5px
+  );
+  pointer-events: none;
+}
+
+/* 按钮组 */
+.crt-buttons {
+  display: flex;
+  gap: 10px;
+}
+
+/* 物理按钮 - 金属质感 */
+.crt-button {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, #555 0%, #3a3a4a 40%, #2a2a35 100%);
+  border: 1px solid #1a1a25;
+  box-shadow:
+    0 3px 6px rgba(0, 0, 0, 0.4),
+    inset 0 1px 1px rgba(255, 255, 255, 0.1),
+    inset 0 -1px 2px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.crt-button:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 4px 8px rgba(0, 0, 0, 0.5),
+    inset 0 1px 1px rgba(255, 255, 255, 0.15);
+}
+
+.crt-button:active {
+  transform: translateY(1px);
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    inset 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+/* 电源按钮 */
+.crt-button.power {
+  background: linear-gradient(160deg, #ff6b6b 0%, #dd3333 50%, #991111 100%);
+  border-color: #661111;
+  box-shadow:
+    0 3px 6px rgba(0, 0, 0, 0.4),
+    0 0 12px rgba(255, 70, 70, 0.3),
+    inset 0 1px 1px rgba(255, 255, 255, 0.15);
+}
+
+.crt-button.power:hover {
+  box-shadow:
+    0 4px 10px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(255, 70, 70, 0.5);
+}
+
+/* 指示灯 - 呼吸效果 */
+.crt-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow:
+    0 0 4px #22c55e,
+    0 0 10px rgba(34, 197, 94, 0.6),
+    0 0 20px rgba(34, 197, 94, 0.3);
+  animation: crt-pulse 2s ease-in-out infinite;
+}
+
+@keyframes crt-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px #22c55e, 0 0 10px rgba(34, 197, 94, 0.6), 0 0 20px rgba(34, 197, 94, 0.3); }
+  50% { opacity: 0.4; box-shadow: 0 0 2px #22c55e, 0 0 4px rgba(34, 197, 94, 0.3), 0 0 8px rgba(34, 197, 94, 0.1); }
+}
+
+/* 品牌标签 */
+.crt-brand {
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  color: rgba(200, 200, 200, 0.4);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+/* 原有布局样式 */
+.layout {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  position: relative;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.layout::before {
+  content: '';
+  position: fixed;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background:
+    /* 赛博光晕效果 */
+    radial-gradient(ellipse at 20% 20%, rgba(34, 197, 94, 0.12) 0%, transparent 40%),
+    radial-gradient(ellipse at 80% 80%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
+    radial-gradient(ellipse at 50% 50%, rgba(34, 197, 94, 0.03) 0%, transparent 60%);
+  background-size:
+    100% 100%,
+    100% 100%,
+    100% 100%;
+  pointer-events: none;
+  z-index: 0;
+  animation: gridPulse 4s ease-in-out infinite;
+}
+
+@keyframes gridPulse {
+  0%, 100% { opacity: 0.8; }
+  50% { opacity: 1; }
+}
+
+.layout::after {
+  display: none;
+}
+
+.header {
+  width: 100%;
+  height: 48px;
+  background: rgba(30, 41, 59, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+  position: relative;
+  z-index: 100;
+}
+
+.header-content {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 32px;
+  width: 100%;
+  max-width: 1200px;
+}
+
+.header-title {
+  font-size: 22px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--color-cta-light) 0%, var(--color-cta) 50%, #84cc16 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header-title::before {
+  content: '';
+  width: 4px;
+  height: 24px;
+  background: linear-gradient(180deg, var(--color-cta) 0%, var(--color-cta-light) 100%);
+  border-radius: 2px;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 0;
+  width: 100%;
+  position: relative;
+  z-index: 1;
+}
+
+.nav-tabs {
+  width: 800px;
+  background: var(--color-bg-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+}
+
+.nav-tab {
+  flex: 1;
+  height: 44px;
+  padding: 0 24px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--color-text-sub);
+  transition: all var(--transition-normal);
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  position: relative;
+  overflow: hidden;
+}
+
+.nav-tab::before {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--color-cta) 0%, var(--color-cta-light) 100%);
+  border-radius: 2px;
+  transition: width var(--transition-normal);
+}
+
+.nav-tab:hover {
+  color: var(--color-text-main);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.nav-tab:hover::before {
+  width: 40%;
+}
+
+.nav-tab.active {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.15) 0%, rgba(74, 222, 128, 0.1) 100%);
+  color: var(--color-cta);
+  box-shadow: 0 4px 15px rgba(34, 197, 94, 0.15);
+}
+
+/* 顶部状态面板 */
+.crt-top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 48px;
+  background:
+    radial-gradient(ellipse at 50% 0%, #1f1f35 0%, #1a1a2a 100%);
+  border-radius: 28px 28px 0 0;
+  position: relative;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  box-shadow:
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* 顶部散热孔装饰 */
+.crt-top-bar::after {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  left: 48px;
+  right: 48px;
+  height: 1px;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 3px,
+    rgba(255,255,255,0.03) 3px,
+    rgba(255,255,255,0.03) 5px
+  );
+  pointer-events: none;
+}
+
+.crt-top-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.crt-icon {
+  color: #22c55e;
+  font-size: 12px;
+  text-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+  letter-spacing: 2px;
+}
+
+.crt-system {
+  color: rgba(200, 200, 200, 0.5);
+  letter-spacing: 2px;
+  font-size: 10px;
+}
+
+.crt-top-center {
+  color: rgba(34, 197, 94, 0.5);
+  letter-spacing: 2px;
+  font-size: 11px;
+  text-shadow: 0 0 4px rgba(34, 197, 94, 0.3);
+}
+
+.crt-top-right {
+  display: flex;
+  align-items: center;
+}
+
+.crt-status {
+  padding: 3px 10px;
+  border-radius: 2px;
+  font-weight: bold;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  font-size: 9px;
+}
+
+.crt-status.online {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.15), inset 0 0 4px rgba(34, 197, 94, 0.05);
+}
+
+.status-bar {
+  width: 800px;
+  height: 28px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(34, 197, 94, 0.15);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  margin-bottom: 12px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: #22c55e;
+  letter-spacing: 1px;
+  text-shadow: 0 0 4px rgba(34, 197, 94, 0.4);
+  box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.3), 0 0 8px rgba(34, 197, 94, 0.06);
+}
+
+.page-container {
+  width: 800px;
+  margin-top: 20px;
+}
+
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.loading-card {
+  background: white;
+  padding: 32px 48px;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--color-bg-page);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-text {
+  font-size: 14px;
+  color: var(--color-text-main);
+}
+
+.toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a2a;
+  border: 1px solid #22c55e;
+  color: #22c55e;
+  padding: 12px 24px;
+  border-radius: 4px;
+  font-size: 14px;
+  z-index: 1001;
+  animation: fadeInUp 0.3s ease;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.3);
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* ========== 移动端响应式适配 ========== */
+
+@media (max-width: 768px) {
+  /* 最外层容器 */
+  .crt-container {
+    padding: 20px 10px;
+  }
+
+  /* CRT显示器外壳 */
+  .crt {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 16px;
+    margin-top: 0;
+  }
+
+  /* 屏幕边框 */
+  .crt-frame {
+    width: calc(100% - 20px);
+    height: auto;
+    min-height: 60vh;
+    padding: 12px;
+    margin: 0 10px;
+    border-radius: 12px;
+  }
+
+  /* 顶部状态栏 */
+  .crt-top-bar {
+    padding: 10px 16px;
+    border-radius: 16px 16px 0 0;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .crt-top-bar::after {
+    left: 16px;
+    right: 16px;
+  }
+
+  /* 底部控制面板 */
+  .crt-controls {
+    padding: 10px 20px;
+    gap: 12px;
+    border-radius: 0 0 16px 16px;
+  }
+
+  .crt-controls::before {
+    left: 20px;
+    right: 20px;
+  }
+
+  /* 品牌标签 - 移动端隐藏 */
+  .crt-brand {
+    display: none;
+  }
+
+  /* 导航标签 */
+  .nav-tabs {
+    width: 100%;
+    max-width: 100%;
+    padding: 4px;
+    gap: 4px;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+
+  .nav-tab {
+    padding: 0 12px;
+    height: 40px;
+    font-size: 12px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  /* 页面容器 */
+  .page-container {
+    width: 100%;
+    max-width: 100%;
+    margin-top: 16px;
+    padding: 0 8px;
+  }
+
+  /* 状态栏 */
+  .status-bar {
+    width: 100%;
+    max-width: 100%;
+    font-size: 10px;
+    padding: 0 10px;
+  }
+
+  /* 标题 */
+  .header-title {
+    font-size: 18px;
+  }
+
+  .header-content {
+    padding: 0 16px;
+  }
+
+  /* 主内容区 */
+  .main-content {
+    padding: 20px 0;
+  }
+
+  /* 加载卡片 */
+  .loading-card {
+    padding: 24px 32px;
+    margin: 0 20px;
+  }
+
+  /* Toast提示 */
+  .toast {
+    bottom: 20px;
+    padding: 10px 20px;
+    font-size: 13px;
+    left: 16px;
+    right: 16px;
+    transform: none;
+  }
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* 小屏幕手机 */
+@media (max-width: 480px) {
+  .crt-frame {
+    min-height: 65vh;
+    padding: 8px;
+  }
+
+  .crt-button {
+    width: 18px;
+    height: 18px;
+  }
+
+  .crt-top-left,
+  .crt-top-right {
+    display: none;
+  }
+
+  .crt-top-center {
+    width: 100%;
+    text-align: center;
+  }
+
+  .header-title {
+    font-size: 16px;
+  }
+
+  .nav-tab {
+    padding: 0 10px;
+    height: 36px;
+    font-size: 11px;
+  }
+}
+
+/* 横屏模式优化 */
+@media (max-height: 600px) and (orientation: landscape) {
+  .crt-frame {
+    min-height: 50vh;
+    padding: 10px;
+  }
+
+  .crt-top-bar {
+    padding: 8px 24px;
+  }
+
+  .crt-controls {
+    padding: 8px 24px;
+  }
+}

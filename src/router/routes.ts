@@ -1,0 +1,1 @@
+// 路由配置已整合到 StaticWrapper 组件中
