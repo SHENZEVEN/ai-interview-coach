@@ -2,6 +2,8 @@
 
 面试准备 → 模拟 → 诊断的闭环 Web 应用。基于 LangChain + RAG 的认知诊断式面试 Agent。
 
+在线访问：https://ai-interview-coach-flame.vercel.app
+
 ![stack](https://img.shields.io/badge/React-19-61DAFB?logo=react) ![stack](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi) ![stack](https://img.shields.io/badge/LangChain-0.3-1C3C3C?logo=langchain) ![stack](https://img.shields.io/badge/ChromaDB-0.5-FF6F00?logo=chromadb) ![deploy](https://img.shields.io/badge/deploy-Vercel-black?logo=vercel)
 
 ## 导航
