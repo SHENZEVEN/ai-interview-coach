@@ -8,8 +8,15 @@ import {
 import { exportHistoryRecords } from '../utils/exportHistory';
 import '../styles/History.css';
 
-type TabType = 'all' | 'wrong';
+type TabType = 'all' | 'wrong' | 'roast' | 'prep';
 type ExportFormat = 'json' | 'word';
+
+const MODE_LABELS: Record<string, string> = {
+  quick: '⚡ 快速练习',
+  targeted: '🎯 针对性练习',
+  roast: '🧠 面试拷打',
+  prep_drill: '📋 面试准备·逐题练习',
+};
 
 const History = () => {
   const [records, setRecords] = useState<HistoryRecord[]>([]);
@@ -21,10 +28,11 @@ const History = () => {
   const [toastMessage, setToastMessage] = useState('');
 
   const loadRecords = useCallback(() => {
-    const data = activeTab === 'wrong' 
-      ? getHistoryRecords().filter(r => r.isWrong)
-      : getHistoryRecords();
-    setRecords(data.slice(0, 50)); // 显示最近50条
+    let data = getHistoryRecords();
+    if (activeTab === 'wrong') data = data.filter(r => r.isWrong);
+    else if (activeTab === 'roast') data = data.filter(r => r.mode === 'roast');
+    else if (activeTab === 'prep') data = data.filter(r => r.mode === 'prep_drill');
+    setRecords(data.slice(0, 50));
   }, [activeTab]);
 
   useEffect(() => {
@@ -68,9 +76,13 @@ const History = () => {
   const allRecords = getHistoryRecords();
   const wrongCount = allRecords.filter(r => r.isWrong).length;
 
-  const displayedRecords = activeTab === 'wrong'
-    ? allRecords.filter(r => r.isWrong).slice(0, 50)
-    : allRecords.slice(0, 50);
+  const displayedRecords = (() => {
+    let data = allRecords;
+    if (activeTab === 'wrong') data = data.filter(r => r.isWrong);
+    else if (activeTab === 'roast') data = data.filter(r => r.mode === 'roast');
+    else if (activeTab === 'prep') data = data.filter(r => r.mode === 'prep_drill');
+    return data.slice(0, 50);
+  })();
 
   return (
     <div>
@@ -114,19 +126,31 @@ const History = () => {
         </div>
 
         <div className="tabs">
-          <button 
+          <button
             className={`tab ${activeTab === 'all' ? 'active' : ''}`}
             onClick={() => setActiveTab('all')}
           >
             全部记录
             <span className="tab-count">({allRecords.length})</span>
           </button>
-          <button 
+          <button
             className={`tab ${activeTab === 'wrong' ? 'active' : ''}`}
             onClick={() => setActiveTab('wrong')}
           >
             错题本
             <span className="tab-count">({wrongCount})</span>
+          </button>
+          <button
+            className={`tab ${activeTab === 'roast' ? 'active' : ''}`}
+            onClick={() => setActiveTab('roast')}
+          >
+            面试拷打
+          </button>
+          <button
+            className={`tab ${activeTab === 'prep' ? 'active' : ''}`}
+            onClick={() => setActiveTab('prep')}
+          >
+            面试准备
           </button>
         </div>
 
@@ -134,7 +158,7 @@ const History = () => {
           <div className="empty-state">
             <div className="empty-icon">📭</div>
             <div className="empty-text">
-              {activeTab === 'all' ? '暂无历史记录' : '暂无错题记录'}
+              {activeTab === 'all' ? '暂无历史记录' : activeTab === 'wrong' ? '暂无错题记录' : activeTab === 'roast' ? '暂无面试拷打记录' : '暂无面试准备练习记录'}
             </div>
           </div>
         ) : (
@@ -148,7 +172,7 @@ const History = () => {
                 <div className="record-header">
                   <div className="record-badges">
                     <span className="record-badge mode">
-                      {record.mode === 'quick' ? '快速练习' : '针对性练习'}
+                      {MODE_LABELS[record.mode] || record.mode}
                     </span>
                     {record.category && (
                       <span className="record-badge category">{record.category}</span>
@@ -178,7 +202,7 @@ const History = () => {
             <div className="detail-header">
               <div className="detail-badges">
                 <span className="record-badge mode">
-                  {selectedRecord.mode === 'quick' ? '快速练习' : '针对性练习'}
+                  {MODE_LABELS[selectedRecord.mode] || selectedRecord.mode}
                 </span>
                 {selectedRecord.category && (
                   <span className="record-badge category">{selectedRecord.category}</span>
@@ -187,7 +211,7 @@ const History = () => {
                   <span className="record-badge wrong">错题</span>
                 )}
               </div>
-              <button 
+              <button
                 className="detail-close"
                 onClick={() => setSelectedRecord(null)}
               >
@@ -195,13 +219,63 @@ const History = () => {
               </button>
             </div>
 
+            {/* 面试拷打特有：诊断摘要 */}
+            {selectedRecord.mode === 'roast' && (
+              <div className="detail-section">
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+                  {selectedRecord.diagnosisScore !== undefined && (
+                    <div style={{ padding: '8px 14px', background: '#0a0a0a', border: '1px solid #333', borderRadius: 6, textAlign: 'center' }}>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: selectedRecord.diagnosisScore >= 60 ? '#22ff22' : '#ff6666', fontFamily: 'monospace' }}>
+                        {selectedRecord.diagnosisScore}
+                      </div>
+                      <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>诊断总分</div>
+                    </div>
+                  )}
+                  {selectedRecord.sessionId && (
+                    <div style={{ padding: '8px 14px', background: '#0a0a0a', border: '1px solid #333', borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, color: '#00f0ff', fontFamily: 'monospace' }}>{selectedRecord.sessionId.slice(0, 12)}</div>
+                      <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>会话 ID</div>
+                    </div>
+                  )}
+                </div>
+                {selectedRecord.knowledgeHits && selectedRecord.knowledgeHits.length > 0 && (
+                  <div style={{ marginBottom: 4 }}>
+                    <span style={{ fontSize: 11, color: '#22ff22' }}>✅ 命中知识点：</span>
+                    <span style={{ fontSize: 11, color: '#ccc' }}>{selectedRecord.knowledgeHits.join('、')}</span>
+                  </div>
+                )}
+                {selectedRecord.knowledgeGaps && selectedRecord.knowledgeGaps.length > 0 && (
+                  <div>
+                    <span style={{ fontSize: 11, color: '#ff6666' }}>⚠️ 知识缺口：</span>
+                    <span style={{ fontSize: 11, color: '#ccc' }}>{selectedRecord.knowledgeGaps.join('、')}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 面试准备特有：文档信息 */}
+            {selectedRecord.mode === 'prep_drill' && selectedRecord.prepTitle && (
+              <div className="detail-section">
+                <div style={{ padding: '8px 12px', background: '#0a0a0a', border: '1px solid #ff00ff40', borderRadius: 6 }}>
+                  <span style={{ fontSize: 11, color: '#ff00ff' }}>📋 来源文档：</span>
+                  <span style={{ fontSize: 12, color: '#ccc' }}>{selectedRecord.prepTitle}</span>
+                  {selectedRecord.prepId && (
+                    <span style={{ fontSize: 10, color: '#888', marginLeft: 8 }}>({selectedRecord.prepId.slice(0, 8)})</span>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="detail-section">
               <div className="detail-score">
-                <div className={`detail-score-badge ${selectedRecord.score >= 7 ? 'pass' : 'fail'}`}>
-                  {selectedRecord.score}
+                <div className={`detail-score-badge ${selectedRecord.mode === 'roast' ? (selectedRecord.score >= 60 ? 'pass' : 'fail') : (selectedRecord.score >= 7 ? 'pass' : 'fail')}`}>
+                  {selectedRecord.score}{selectedRecord.mode === 'roast' ? '' : '/10'}
                 </div>
                 <span className="result-label">
-                  {selectedRecord.score >= 7 ? '回答正确' : '回答不正确'}
+                  {selectedRecord.mode === 'roast'
+                    ? (selectedRecord.score >= 80 ? '优秀' : selectedRecord.score >= 60 ? '良好' : selectedRecord.score >= 40 ? '一般' : '较差')
+                    : (selectedRecord.score >= 7 ? '回答正确' : '回答不正确')
+                  }
                 </span>
               </div>
             </div>
@@ -238,9 +312,22 @@ const History = () => {
               <div className="detail-text">{formatDate(selectedRecord.timestamp)}</div>
             </div>
 
-            {selectedRecord.isWrong && (
+            {/* 面试拷打：跳转诊断报告 */}
+            {selectedRecord.mode === 'roast' && selectedRecord.sessionId && (
+              <div className="record-actions" style={{ marginTop: 12 }}>
+                <button
+                  className="record-btn primary"
+                  onClick={() => window.location.href = `/roast?session=${selectedRecord.sessionId}`}
+                  style={{ background: '#00f0ff20', borderColor: '#00f0ff60', color: '#00f0ff' }}
+                >
+                  🧠 查看完整诊断报告
+                </button>
+              </div>
+            )}
+
+            {selectedRecord.isWrong && selectedRecord.mode !== 'roast' && (
               <div className="record-actions">
-                <button 
+                <button
                   className="record-btn primary"
                   onClick={() => handleRetry(selectedRecord)}
                 >

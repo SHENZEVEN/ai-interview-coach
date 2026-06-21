@@ -26,5 +26,14 @@ Thumbs.db
 .tmp/
 *.tsbuildinfo
 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ChromaDB data
+chroma_data/
+
 # Misc
 *.local
+CLAUDE.md

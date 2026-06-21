@@ -20,7 +20,7 @@ export interface QuestionCategory {
 export interface HistoryRecord {
   id: string;
   timestamp: number;
-  mode: 'quick' | 'targeted';
+  mode: 'quick' | 'targeted' | 'roast' | 'prep_drill';
   category?: string;
   questionText: string;
   userAnswer: string;
@@ -29,6 +29,14 @@ export interface HistoryRecord {
   referenceAnswer: string;
   isWrong: boolean;
   jdText?: string;
+  // 面试拷打扩展字段
+  sessionId?: string;
+  knowledgeHits?: string[];
+  knowledgeGaps?: string[];
+  diagnosisScore?: number;
+  // 面试准备扩展字段
+  prepId?: string;
+  prepTitle?: string;
 }
 
 export interface AIEvaluation {
@@ -37,9 +45,20 @@ export interface AIEvaluation {
   referenceAnswer: string;
 }
 
-export type Category = '前端' | '计网' | '算法' | 'AI Coding' | '定制';
+export type Category = '前端' | '计网' | '算法' | 'AI Coding' | '系统设计' | '数据库' | '操作系统' | 'AI基础' | '产品设计' | '定制';
 
-export const CATEGORIES: Category[] = ['前端', '计网', '算法', 'AI Coding', '定制'];
+export const CATEGORIES: Category[] = ['前端', '计网', '算法', 'AI Coding', '系统设计', '数据库', '操作系统', 'AI基础', '产品设计', '定制'];
+
+// 岗位方向 → 题库分类映射
+export const DIRECTION_CATEGORIES: Record<string, Category[]> = {
+  A: ['产品设计', '定制'],
+  B: ['产品设计', '定制'],
+  C: ['产品设计', '定制'],
+  D: ['产品设计', '定制'],
+  E: ['AI基础', '产品设计', 'AI Coding', '定制'],
+  F: ['前端', '计网', '算法', 'AI Coding', '系统设计', '数据库', '操作系统', 'AI基础'],
+  G: ['前端', '计网', '算法', 'AI Coding', '系统设计', '数据库', '操作系统', 'AI基础', '产品设计', '定制'],
+};
 
 // 题库相关类型
 export interface QuestionBankItem extends Question {

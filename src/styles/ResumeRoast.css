@@ -836,3 +836,194 @@
     order: 2;
   }
 }
+
+/* 每题详细评分 */
+.questions-detail-section {
+  margin-top: var(--spacing-xl);
+}
+
+.questions-detail-section h3 {
+  margin-bottom: var(--spacing-lg);
+  font-size: 18px;
+}
+
+.questions-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.question-detail-item {
+  background: var(--color-bg-page);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.q-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.q-header .q-number {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-cta);
+}
+
+.q-header .q-score {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.q-header .q-category {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.q-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.q-question,
+.q-answer,
+.q-strengths,
+.q-weaknesses,
+.q-improvement,
+.q-standard-answer {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.q-content .label {
+  font-weight: 600;
+  color: var(--color-text-sub);
+  margin-right: var(--spacing-sm);
+}
+
+.q-standard-answer {
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-md);
+  margin-top: var(--spacing-sm);
+}
+
+.q-standard-answer .label {
+  color: var(--color-cta);
+}
+
+.q-strengths {
+  color: #10b981;
+}
+
+.q-weaknesses {
+  color: #ef4444;
+}
+
+/* 难度选择器 */
+.difficulty-selector {
+  margin-top: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.difficulty-selector h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: var(--spacing-md);
+  color: var(--color-text-main);
+}
+
+.difficulty-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--spacing-sm);
+}
+
+.difficulty-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: var(--spacing-md);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+}
+
+.difficulty-option:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.difficulty-option.active {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: var(--color-cta);
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.2);
+}
+
+.difficulty-option:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.difficulty-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-main);
+  margin-bottom: 4px;
+}
+
+.difficulty-option.active .difficulty-label {
+  color: var(--color-cta);
+}
+
+.difficulty-desc {
+  font-size: 12px;
+  color: var(--color-text-sub);
+  line-height: 1.4;
+}
+/* ── Agent 诊断报告内嵌样式 ── */
+.q-score-badge {
+  font-size: 10px;
+  font-family: monospace;
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: #1a1a1a;
+  margin: 0 4px;
+}
+
+.q-score-tag {
+  font-family: monospace;
+  display: inline-block;
+}
+
+.q-score-tag.score-excellent { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); }
+.q-score-tag.score-good { background: rgba(59,130,246,0.15); border: 1px solid rgba(59,130,246,0.3); }
+.q-score-tag.score-average { background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.3); }
+.q-score-tag.score-poor { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); }
+
+/* 诊断卡片暗色主题适配 */
+.report-stage .stage-card {
+  background: transparent;
+}
+
+/* 诊断容器在小屏的滚动 */
+@media (max-width: 600px) {
+  .report-stage svg {
+    max-width: 100%;
+    height: auto;
+  }
+}

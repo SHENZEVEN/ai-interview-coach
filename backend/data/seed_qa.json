@@ -1,0 +1,138 @@
+[
+  {
+    "category": "前端",
+    "subcategory": "React",
+    "question": "请解释 React 中的虚拟 DOM 工作原理，以及它如何提升性能？",
+    "answer": "虚拟 DOM 是真实 DOM 的 JS 对象表示。React 在内存中维护一棵虚拟 DOM 树，状态变化时创建新虚拟树，通过 Diff 算法对比新旧树找到最小变更集，最后批量更新真实 DOM。这避免了频繁直接操作 DOM 造成的回流和重绘，显著提升渲染性能。",
+    "key_points": ["虚拟 DOM 本质是 JS 对象", "Diff 算法（同层比较）", "批量更新机制", "减少回流重绘"],
+    "related_concepts": ["React Fiber", "Reconciliation", "key 属性", "shouldComponentUpdate"]
+  },
+  {
+    "category": "前端",
+    "subcategory": "JavaScript",
+    "question": "说说你对闭包的理解，以及它在实际开发中的应用场景？",
+    "answer": "闭包是函数访问其外部作用域变量的能力。当一个函数被创建时，它会保留对外部作用域的引用，即使外部函数已执行完毕。应用场景：模块化封装（IIFE）、数据私有化（工厂函数）、柯里化、防抖节流、事件回调等。注意：闭包可能导致内存泄漏，需及时释放不再使用的引用。",
+    "key_points": ["函数 + 词法作用域", "外部变量不被 GC 回收", "模块化/私有化", "防抖节流/柯里化", "内存泄漏风险"],
+    "related_concepts": ["作用域链", "执行上下文", "垃圾回收", "IIFE", "块级作用域 let/const"]
+  },
+  {
+    "category": "前端",
+    "subcategory": "CSS/布局",
+    "question": "请对比 Flexbox 和 Grid 布局的适用场景，什么情况下选哪个？",
+    "answer": "Flexbox 是一维布局，适合处理行或列方向上的元素排列对齐；Grid 是二维布局，适合同时处理行和列的复杂网格。选择原则：单行/单列排列用 Flexbox（导航栏、卡片列表）；多行多列网格布局用 Grid（页面整体布局、仪表盘）。两者也可嵌套使用。",
+    "key_points": ["Flexbox 一维 vs Grid 二维", "Flex 适合组件级布局", "Grid 适合页面级布局", "可嵌套使用"],
+    "related_concepts": ["grid-template-areas", "flex-grow/shrink", "gap 属性", "响应式布局"]
+  },
+  {
+    "category": "前端",
+    "subcategory": "TypeScript",
+    "question": "TypeScript 中的 type 和 interface 有什么区别？什么场景下你会优先选哪个？",
+    "answer": "主要区别：1) interface 支持声明合并，type 不支持；2) type 可以定义联合类型、交叉类型、元组等，interface 主要用于对象类型；3) interface 继承用 extends，type 用 & 交叉。优先选择：描述对象形状时优先 interface（可扩展），需要联合类型/映射类型时用 type。在 React 中，Props 类型建议用 interface。",
+    "key_points": ["声明合并是最大差异", "type 支持联合/交叉/元组", "接口优先原则", "React Props 用 interface"],
+    "related_concepts": ["泛型", "条件类型", "映射类型", "类型守卫"]
+  },
+  {
+    "category": "前端",
+    "subcategory": "性能优化",
+    "question": "一个 React 列表页面渲染很慢，你会从哪些方面排查和优化？",
+    "answer": "排查：React DevTools Profiler 定位瓶颈组件 → 检查是否有不必要的重渲染 → 检查数据量和渲染次数。优化：1) React.memo / useMemo / useCallback 避免无效渲染；2) 虚拟列表（react-window）处理长列表；3) 代码分割（React.lazy + Suspense）；4) 图片懒加载；5) 防抖节流高频事件；6) 合理使用 key 避免列表重建；7) Web Worker 处理计算密集型任务。",
+    "key_points": ["Profiler 定位瓶颈", "React.memo/useMemo", "虚拟列表", "代码分割", "图片懒加载", "合理 key"],
+    "related_concepts": ["Reconciliation", "Fiber 架构", "Batching", "Server Components"]
+  },
+  {
+    "category": "计网",
+    "subcategory": "HTTP",
+    "question": "详细描述从输入 URL 到页面渲染完成的完整过程？",
+    "answer": "1) DNS 解析（浏览器缓存→系统缓存→路由器→递归查询）；2) TCP 三次握手建立连接；3) TLS 握手（HTTPS）；4) 发送 HTTP 请求；5) 服务器处理并返回响应；6) 浏览器解析 HTML 构建 DOM 树，解析 CSS 构建 CSSOM 树，合成 Render Tree；7) 布局（Layout）计算每个节点的位置大小；8) 绘制（Paint）将像素渲染到屏幕。过程中涉及资源预加载、缓存策略、CDN 加速等优化手段。",
+    "key_points": ["DNS 解析流程", "TCP 三次握手", "TLS 握手", "DOM/CSSOM/Render Tree", "布局和绘制", "缓存策略"],
+    "related_concepts": ["HTTP/2 多路复用", "QUIC/HTTP3", "CDN", "预加载 preload/prefetch"]
+  },
+  {
+    "category": "计网",
+    "subcategory": "TCP/IP",
+    "question": "TCP 和 UDP 的核心区别是什么？各自适合什么应用场景？",
+    "answer": "TCP：面向连接、可靠传输（确认重传）、流量控制、拥塞控制、有序到达，适合对数据完整性要求高的场景（HTTP、文件传输、邮件）。UDP：无连接、不可靠、无流控拥控、不保证顺序，头部开销小延迟低，适合实时性优先的场景（视频直播、VoIP、DNS、在线游戏）。QUIC 协议在 UDP 基础上实现了类似 TCP 的可靠传输和 TLS 加密。",
+    "key_points": ["TCP 可靠 vs UDP 不保证", "三次握手/四次挥手", "流控和拥塞控制", "UDP 低延迟优势", "QUIC 的折中"],
+    "related_concepts": ["滑动窗口", "慢启动", "粘包/拆包", "QUIC/HTTP3"]
+  },
+  {
+    "category": "计网",
+    "subcategory": "网络安全",
+    "question": "什么是跨域？解决跨域的方案有哪些？各自的原理是什么？",
+    "answer": "跨域是浏览器同源策略的限制，协议/域名/端口任一不同即为跨域。解决方案：1) CORS（服务端设置 Access-Control-Allow-Origin 响应头，最标准）；2) JSONP（动态创建 script 标签，只支持 GET）；3) 代理服务器（开发环境 devServer proxy，生产环境 Nginx 反向代理）；4) WebSocket（不受同源策略限制）；5) postMessage（iframe 跨域通信）。推荐生产环境用 CORS + Nginx 代理组合。",
+    "key_points": ["同源策略定义", "CORS 预检请求", "JSONP 只支持 GET", "反向代理原理", "postMessage 适用场景"],
+    "related_concepts": ["简单请求/非简单请求", "OPTIONS 预检", "Cookie SameSite", "CSP"]
+  },
+  {
+    "category": "算法",
+    "subcategory": "排序与查找",
+    "question": "快速排序和归并排序的时间复杂度都是 O(nlogn)，实际中通常选哪个？为什么？",
+    "answer": "实际中快速排序更常用。原因：1) 快排原地排序空间 O(logn)，归并需 O(n) 额外空间；2) 快排常数因子更小，局部性好利于 CPU 缓存。但快排不稳定且最坏 O(n²)，实际中使用三数取中/随机 pivot 优化。归并排序优势：稳定排序、适合链表排序、外部排序。C++ std::sort 使用内省排序（快排+堆排混合），Python Timsort 使用归并+插入混合。",
+    "key_points": ["快排原地 vs 归并 O(n) 额外空间", "快排常数更小", "稳定性差异", "最坏情况优化", "工程实现多使用混合策略"],
+    "related_concepts": ["堆排序", "计数排序/桶排序", "Timsort", "内省排序"]
+  },
+  {
+    "category": "算法",
+    "subcategory": "数据结构",
+    "question": "HashMap/HashTable 的底层实现原理？如何处理哈希冲突？",
+    "answer": "核心是数组+链表/红黑树。通过哈希函数将 key 映射到数组下标 O(1) 存取。冲突处理：1) 链地址法（Java HashMap，链表长度>8 转红黑树）；2) 开放地址法（线性探测、二次探测，ThreadLocal 使用）；3) 再哈希法。负载因子超过阈值（默认 0.75）触发扩容 resize（2 倍），需 rehash 所有元素。JDK 8+ 引入红黑树优化极端冲突场景 O(n) → O(logn)。",
+    "key_points": ["数组+链表/红黑树", "链地址法 vs 开放地址法", "负载因子与扩容", "JDK8 红黑树优化", "rehash 过程"],
+    "related_concepts": ["ConcurrentHashMap", "一致性哈希", "Bloom Filter", "TreeMap"]
+  },
+  {
+    "category": "算法",
+    "subcategory": "动态规划",
+    "question": "什么样的题适合用动态规划？你的解题套路是什么？",
+    "answer": "特征：最优子结构 + 重叠子问题 + 无后效性。套路：1) 定义 dp[i] 含义；2) 找状态转移方程；3) 确定初始值/边界条件；4) 确定遍历顺序；5) 空间优化（滚动数组）。常见类型：线性 DP（爬楼梯）、背包问题（0-1/完全）、区间 DP（回文子串）、树形 DP（打家劫舍 III）、状态压缩 DP。面试重点是从暴力递归→记忆化搜索→DP 递推的推导过程。",
+    "key_points": ["最优子结构+重叠子问题", "状态定义和转移方程", "从递归到 DP 的推导", "空间优化技巧", "常见 DP 类型"],
+    "related_concepts": ["记忆化搜索", "背包九讲", "状态压缩", "概率 DP"]
+  },
+  {
+    "category": "AI Coding",
+    "subcategory": "Prompt Engineering",
+    "question": "你如何设计一个复杂任务的 System Prompt？分享你的方法论？",
+    "answer": "方法论：1) 角色定义（Who）——明确 AI 的身份、能力边界；2) 任务描述（What）——具体可执行的步骤，不是模糊描述；3) 输出格式（How）——严格约束输出结构（JSON Schema）；4) 边界条件（Don't）——明确什么不做；5) 示例驱动（Example）——Few-shot 比零样本更稳定。进阶技巧：链式思考（CoT）、角色扮演约束、结构化分层 Prompt（System + Context + Instruction）。",
+    "key_points": ["角色-任务-格式-边界-示例 五要素", "Few-shot 稳定性", "CoT 链式思考", "JSON Schema 约束", "分层 Prompt 设计"],
+    "related_concepts": ["RAG", "Function Calling", "Token 预算管理", "System vs User Message"]
+  },
+  {
+    "category": "AI Coding",
+    "subcategory": "RAG",
+    "question": "你做了一个 RAG 系统，但检索效果不好（答非所问），你会从哪些方面排查优化？",
+    "answer": "排查链路：Embedding 模型 → 文档切分 → 检索策略 → 排序 → 生成。优化：1) 文档切分优化（调整 chunk size/overlap，语义切分替代固定长度）；2) Embedding 选型（领域微调模型优于通用模型）；3) 检索策略升级（HyDE 假设文档嵌入、Multi-Query 多角度检索、Reranker 精排）；4) 查询改写（Query Rewriting）；5) 混合检索（关键词 BM25 + 语义检索）；6) 评估量化（RAGAS 框架评估命中率和答案相关性）。",
+    "key_points": ["chunk 策略是基础", "Embedding 模型选型", "HyDE/Multi-Query 提升召回", "Reranker 精排", "混合检索", "RAGAS 量化评估"],
+    "related_concepts": ["Vector DB 选型", "CRAG 纠错式 RAG", "Self-RAG", "Graph RAG"]
+  },
+  {
+    "category": "AI Coding",
+    "subcategory": "Agent",
+    "question": "什么是 AI Agent？Agent 和传统的 LLM Chat 有什么本质区别？",
+    "answer": "本质区别：Agent 具备自主规划和执行能力，而 Chat 是被动问答。Agent 的核心是「认知-决策-执行」闭环：1) 感知环境（输入+上下文）；2) 规划（ReAct/Plan-Execute 模式拆分任务）；3) 调用工具（搜索、代码执行、API）；4) 观察结果并迭代优化；5) 记忆系统（短期+长期记忆）。Chat 的模式是单轮或多轮对话，Agent 的模式是自主完成一个目标。关键组件：LLM 大脑 + Tool Use + Memory + Planning。",
+    "key_points": ["Agent 是自主规划执行", "Chat 是被动问答", "ReAct 模式", "Tool Use", "Memory 系统", "规划能力是核心"],
+    "related_concepts": ["AutoGPT", "LangGraph", "Multi-Agent", "MCP 协议"]
+  },
+  {
+    "category": "系统设计",
+    "subcategory": "架构",
+    "question": "如果要设计一个支持百万并发的面试系统，核心架构是怎样的？",
+    "answer": "分层架构：1) 接入层：CDN + 多机房部署 + DNS 智能解析；2) 网关层：Nginx/Kong 限流熔断 + API Gateway；3) 业务层：微服务无状态化 + K8s 弹性伸缩；4) 消息队列：Kafka 削峰填谷解耦 AI 推理等慢任务；5) 缓存层：Redis 集群缓存热点数据（题库、会话状态）；6) 存储层：MySQL 分库分表 + ES 全文检索；7) AI 推理：独立 GPU 集群 + 推理队列异步化 + 模型并发限制。关键：无状态 = 可水平扩展。",
+    "key_points": ["分层架构", "无状态 = 可扩展", "消息队列削峰", "Redis 缓存", "GPU 推理独立集群"],
+    "related_concepts": ["CAP 定理", "微服务", "限流算法", "WebSocket vs SSE"]
+  },
+  {
+    "category": "数据库",
+    "subcategory": "索引与优化",
+    "question": "MySQL 索引底层为什么用 B+ 树而不是 B 树或红黑树？",
+    "answer": "1) B+ 树非叶子节点只存索引不存数据，单个节点能存更多 key，树高度更低，磁盘 IO 次数更少；2) 叶子节点通过双向链表连接，范围查询只需遍历链表，B 树需要中序遍历；3) 相比红黑树（二叉树），B+ 树是多叉树，高度更可控，适合磁盘场景（磁盘 IO 是瓶颈）。红黑树适合内存场景（如 Java TreeMap）。总结：B+ 树 = 为磁盘 IO 优化的多叉平衡树。",
+    "key_points": ["非叶子只存索引降低高度", "叶子链表支持高效范围查询", "磁盘 IO 是瓶颈", "红黑树适合内存"],
+    "related_concepts": ["聚簇索引 vs 非聚簇索引", "联合索引最左前缀", "覆盖索引", "索引下推", "页分裂"]
+  },
+  {
+    "category": "操作系统",
+    "subcategory": "进程与线程",
+    "question": "进程和线程的本质区别？协程又是什么？",
+    "answer": "进程是资源分配的最小单位（独立内存空间），线程是 CPU 调度的最小单位（共享进程内存）。切换开销：进程 > 线程 > 协程。协程是用户态轻量级线程，调度由程序自身控制而非 OS，无上下文切换开销，适合 IO 密集型高并发（Go goroutine、Python asyncio、JS async/await）。线程适合 CPU 密集型（可充分利用多核），协程适合 IO 密集型。",
+    "key_points": ["进程独立内存 vs 线程共享内存", "上下文切换开销对比", "协程用户态调度", "CPU 密集用线程", "IO 密集用协程"],
+    "related_concepts": ["GIL", "死锁四条件", "CAS", "epoll/io_uring", "Actor 模型"]
+  }
+]

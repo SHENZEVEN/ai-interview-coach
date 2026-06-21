@@ -36,6 +36,9 @@ const TargetedPractice = () => {
   const [isImporting, setIsImporting] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [answers, setAnswers] = useState<Map<string, { answer: string; result: { score: number; comment: string; referenceAnswer: string } }>>(new Map());
+  
+  // 难度等级
+  const [difficulty, setDifficulty] = useState<'intern' | 'junior' | 'mid' | 'senior' | 'lead'>('mid');
 
   const handleGenerate = async () => {
     if (!jdText.trim()) return;
@@ -60,7 +63,7 @@ const TargetedPractice = () => {
         setGenerateProgress((i + 1) * 20);
         
         await delay(300);
-        const newQuestion = await aiGenerateQuestion(jdText);
+        const newQuestion = await aiGenerateQuestion(jdText, difficulty);
         generatedQuestions.push(newQuestion);
         
         // 自动将AI生成的题目添加到题库，使用多类别
@@ -282,6 +285,30 @@ const TargetedPractice = () => {
                 <span className="drop-text">松开以上传文件</span>
               </div>
             )}
+          </div>
+          
+          {/* 难度选择 */}
+          <div className="difficulty-selector">
+            <div className="difficulty-label">选择难度</div>
+            <div className="difficulty-options">
+              {[
+                { value: 'intern', label: '实习生', desc: '基础概念' },
+                { value: 'junior', label: '初级', desc: '基础应用' },
+                { value: 'mid', label: '中级', desc: '深入理解' },
+                { value: 'senior', label: '高级', desc: '架构设计' },
+                { value: 'lead', label: '专家', desc: '技术决策' }
+              ].map((level) => (
+                <button
+                  key={level.value}
+                  className={`difficulty-btn ${difficulty === level.value ? 'active' : ''}`}
+                  onClick={() => setDifficulty(level.value as any)}
+                  disabled={isGenerating}
+                >
+                  <div className="difficulty-btn-label">{level.label}</div>
+                  <div className="difficulty-btn-desc">{level.desc}</div>
+                </button>
+              ))}
+            </div>
           </div>
           
           <div className="jd-actions">

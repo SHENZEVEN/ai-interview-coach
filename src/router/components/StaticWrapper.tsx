@@ -1,10 +1,11 @@
 import { useLocation, useNavigate } from "react-router";
 import { useState, useEffect } from "react";
 import QuickPractice from "@/views/QuickPractice";
-import TargetedPractice from "@/views/TargetedPractice";
 import History from "@/views/History";
 import QuestionBank from "@/views/QuestionBank";
 import ResumeRoast from "@/views/ResumeRoast";
+import InterviewPrep from "@/views/InterviewPrep";
+import { OFFLINE_MODE } from "@/services/aiService";
 import '../../styles/Layout.css';
 
 const RouterView = () => {
@@ -15,22 +16,20 @@ const RouterView = () => {
   const [currentTime, setCurrentTime] = useState(new Date().toLocaleTimeString('zh-CN'));
 
   useEffect(() => {
-    // 开机动画 - 3秒完成
     const totalPixels = 20;
-    const intervalTime = 3000 / totalPixels; // 3秒 / 20个像素
+    const intervalTime = 3000 / totalPixels;
     let currentPixel = 0;
-    
+
     const bootInterval = setInterval(() => {
       currentPixel++;
       setBootProgress(currentPixel);
-      
+
       if (currentPixel >= totalPixels) {
         clearInterval(bootInterval);
         setTimeout(() => setIsBooting(false), 200);
       }
     }, intervalTime);
 
-    // 清理：如果已经看过开机动画，下次不再显示
     const hasBooted = sessionStorage.getItem('hasBooted');
     if (hasBooted) {
       setIsBooting(false);
@@ -43,50 +42,48 @@ const RouterView = () => {
   }, []);
 
   useEffect(() => {
-    // 实时更新时间
     const timer = setInterval(() => {
       setCurrentTime(new Date().toLocaleTimeString('zh-CN'));
     }, 1000);
-
     return () => clearInterval(timer);
   }, []);
 
   const getActiveTab = () => {
-    if (location.pathname === '/targeted') return 'targeted';
-    if (location.pathname === '/history') return 'history';
-    if (location.pathname === '/questionbank') return 'questionbank';
     if (location.pathname === '/roast') return 'roast';
-    return 'quick';
+    if (location.pathname === '/questionbank') return 'questionbank';
+    if (location.pathname === '/history') return 'history';
+    if (location.pathname === '/prep') return 'prep';
+    // Legacy routes redirect to new tabs
+    if (location.pathname === '/quick' || location.pathname === '/targeted' || location.pathname === '/diagnosis') {
+      return 'prep'; // 重定向到面试准备
+    }
+    return 'prep';
   };
 
   const tabs = [
-    { key: 'quick', label: '快速练习', path: '/quick' },
-    { key: 'targeted', label: '针对性练习', path: '/targeted' },
-    { key: 'questionbank', label: '题库', path: '/questionbank' },
-    { key: 'roast', label: '简历拷打', path: '/roast' },
-    { key: 'history', label: '历史记录', path: '/history' },
+    { key: 'prep', label: '面试准备', path: '/prep', hint: '调研+预测+闭环' },
+    { key: 'roast', label: '面试拷打', path: '/roast', hint: '轻量刷题/Agent模拟' },
+    { key: 'questionbank', label: '题库', path: '/questionbank', hint: '分类练习+错题' },
+    { key: 'history', label: '历史', path: '/history', hint: '记录+诊断报告' },
   ];
 
   const getContent = () => {
     switch (location.pathname) {
-      case '/targeted':
-        return <TargetedPractice />;
-      case '/history':
-        return <History />;
-      case '/questionbank':
-        return <QuestionBank />;
       case '/roast':
         return <ResumeRoast />;
+      case '/questionbank':
+        return <QuestionBank />;
+      case '/history':
+        return <History />;
+      case '/prep':
       default:
-        return <QuickPractice />;
+        return <InterviewPrep />;
     }
   };
 
   return (
     <div className="crt-container">
-      {/* 老式电脑显示器外壳 */}
       <div className="crt">
-        {/* CRT顶部状态栏 - 与底部按钮区域对称 */}
         <div className="crt-top-bar">
           <div className="crt-top-left">
             <span className="crt-icon">▮▮</span>
@@ -96,13 +93,11 @@ const RouterView = () => {
             <span className="crt-time">{currentTime}</span>
           </div>
           <div className="crt-top-right">
-            <span className="crt-status online">ONLINE</span>
+            <span className={`crt-status ${OFFLINE_MODE ? 'offline' : 'online'}`}>{OFFLINE_MODE ? 'DEMO' : 'ONLINE'}</span>
           </div>
         </div>
-        
-        {/* CRT显示器屏幕区域 */}
+
         <div className="crt-frame">
-          {/* 开机动画 */}
           {isBooting && (
             <div className="boot-screen">
               <div className="boot-animation">
@@ -116,13 +111,10 @@ const RouterView = () => {
               <div className="boot-text">System Initializing...</div>
             </div>
           )}
-          
-          {/* 屏幕内框 */}
+
           <div className="crt-screen">
-            {/* 扫描线效果 */}
             <div className="crt-scanlines" />
-            
-            {/* 原有内容 */}
+
             <div className="layout">
               <main className="main-content">
               <div className="status-bar">&gt; SYSTEM READY</div>
@@ -132,6 +124,7 @@ const RouterView = () => {
                     key={tab.key}
                     className={`nav-tab ${getActiveTab() === tab.key ? 'active' : ''}`}
                     onClick={() => navigate(tab.path)}
+                    title={tab.hint}
                   >
                     {tab.label}
                   </button>
@@ -144,8 +137,7 @@ const RouterView = () => {
             </div>
           </div>
         </div>
-        
-        {/* 物理按钮区域 */}
+
         <div className="crt-controls">
           <div className="crt-indicator" />
           <div className="crt-buttons">

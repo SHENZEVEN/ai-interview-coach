@@ -7,10 +7,15 @@ export interface GeneratedQuestion {
 }
 
 export const API_KEY = import.meta.env.VITE_AGNES_API_KEY || '';
-export const API_BASE = 'https://apihub.agnes-ai.com/v1';
+export const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api';
+export const AGNES_API_BASE = 'https://apihub.agnes-ai.com/v1'; // Agnes 直连（简历拷打用）
+
+// Vercel 部署时后端不在 → 优雅降级，不弹红色报错
+const isProduction = import.meta.env.PROD;
+const isVercel = typeof window !== 'undefined' && window.location.hostname.includes('vercel.app');
 
 const TIMEOUT_MS = 30000;
-const MAX_RETRIES = 3;
+const MAX_RETRIES = isVercel ? 0 : 3;  // Vercel 上不重试，直接走降级
 const RETRY_DELAY_MS = 1000;
 
 export const buildHeaders = () => ({
@@ -25,7 +30,7 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const fetchWithTimeout = async (url: string, options: RequestInit): Promise<Response> => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  
+
   try {
     const response = await fetch(url, {
       ...options,
@@ -75,81 +80,39 @@ export const fetchWithRetry = async (url: string, options: RequestInit, retries 
   throw lastError || new Error('请求失败，请稍后重试');
 };
 
-export const generateQuestion = async (jdText: string): Promise<GeneratedQuestion> => {
+export const generateQuestion = async (jdText: string, difficulty: 'intern' | 'junior' | 'mid' | 'senior' | 'lead' = 'mid'): Promise<GeneratedQuestion> => {
   if (!API_KEY) {
     throw new Error('未配置 API Key，请检查环境变量');
   }
 
   try {
-    const response = await fetchWithRetry(`${API_BASE}/chat/completions`, {
+    const response = await fetchWithRetry(`${API_BASE}/generate-question`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'agnes-2.0-flash',
-        messages: [
-          {
-            role: 'system',
-            content: `你是一个专业的面试官。根据提供的职位描述（JD）或面经，生成一道相关的技术面试题。
-
-请判断题目主要属于哪个领域，可选领域：前端、计网、算法、AI Coding。
-- 前端：涉及HTML/CSS/JavaScript/React/Vue/浏览器等
-- 计网：涉及HTTP/TCP/IP/网络协议/网络安全等
-- 算法：涉及数据结构/算法/复杂度分析等
-- AI Coding：涉及AI工具使用/AI辅助编程/提示词工程等
-
-请用JSON格式返回，格式如下：
-{
-  "question": "面试题内容",
-  "category": "前端/计网/算法/AI Coding"
-}`
-          },
-          {
-            role: 'user',
-            content: `根据以下JD/面经生成一道面试题：\n\n${jdText}`
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 500,
+        jd_text: jdText,
+        difficulty: difficulty,
       }),
     });
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      const errorMsg = errorData.error?.message || `AI服务异常 (${response.status})`;
+      const errorMsg = errorData.detail || errorData.error?.message || `服务异常 (${response.status})`;
       throw new Error(errorMsg);
     }
 
     const data = await response.json();
-    const content = data.choices[0]?.message?.content?.trim();
-    
-    if (!content) {
-      throw new Error('AI返回内容为空，请重试');
-    }
+    const validCategories: Category[] = ['前端', '计网', '算法', 'AI Coding'];
+    const categories = (data.categories || ['前端'])
+      .map((c: string) => validCategories.includes(c as Category) ? c : null)
+      .filter(Boolean) as Category[];
 
-    // 尝试解析JSON响应
-    try {
-      const jsonMatch = content.match(/```json\n?([\s\S]*?)\n?```/) || content.match(/\{[\s\S]*\}/);
-      const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : content;
-      const result = JSON.parse(jsonStr);
-      
-      // 验证并转换类别
-      const validCategories: Category[] = ['前端', '计网', '算法', 'AI Coding'];
-      const category = validCategories.includes(result.category) ? result.category : '前端';
-      
-      return {
-        text: result.question || content,
-        categories: [category, '定制'] // 同时包含领域类别和定制标签
-      };
-    } catch {
-      // JSON解析失败，返回原始内容，默认前端类别
-      return {
-        text: content,
-        categories: ['前端', '定制']
-      };
-    }
+    return {
+      text: data.text || '未能生成题目',
+      categories: categories.length > 0 ? categories : ['前端', '定制'],
+    };
   } catch (error) {
     if (error instanceof Error) {
       throw error;
@@ -171,89 +134,83 @@ export const evaluateAnswer = async (
     const questionText = typeof question === 'string' ? question : question.text;
     const referenceAnswer = typeof question === 'string' ? '' : question.referenceAnswer;
 
-    const prompt = `你是一个专业的面试评价专家。请根据面试题和用户的回答给出评价。
-
-面试题：${questionText}
-${referenceAnswer ? `参考要点：${referenceAnswer}` : ''}
-
-用户回答：${userAnswer}
-
-请从以下几个方面评价：
-1. 回答的完整性和准确性
-2. 专业知识掌握程度
-3. 表达能力和逻辑性
-
-请用JSON格式返回评价，格式如下：
-{
-  "score": 分数(1-10整数),
-  "comment": "简短的评语(50字以内)",
-  "referenceAnswer": "参考答案要点"
-}`;
-
-    const response = await fetchWithRetry(`${API_BASE}/chat/completions`, {
+    const response = await fetchWithRetry(`${API_BASE}/evaluate-answer`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'agnes-2.0-flash',
-        messages: [
-          {
-            role: 'system',
-            content: '你是一个专业的面试评价专家。你需要根据面试题和用户的回答，给出1-10分的评分和简短的评语，以及参考答案。请严格按照要求的JSON格式返回。'
-          },
-          {
-            role: 'user',
-            content: prompt
-          }
-        ],
-        temperature: 0.3,
-        max_tokens: 800,
+        question: questionText,
+        user_answer: userAnswer,
+        reference_answer: referenceAnswer,
+        context: context || '',
       }),
     });
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      const errorMsg = errorData.error?.message || `AI服务异常 (${response.status})`;
+      const errorMsg = errorData.detail || errorData.error?.message || `服务异常 (${response.status})`;
       throw new Error(errorMsg);
     }
 
     const data = await response.json();
-    const content = data.choices[0]?.message?.content?.trim();
-    
-    if (!content) {
-      throw new Error('AI返回内容为空，请重试');
-    }
 
-    // 尝试解析JSON响应
-    try {
-      // 提取JSON（可能在反引号中）
-      const jsonMatch = content.match(/```json\n?([\s\S]*?)\n?```/) || content.match(/\{[\s\S]*\}/);
-      const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : content;
-      const result = JSON.parse(jsonStr);
-      
-      return {
-        score: Math.min(10, Math.max(1, parseInt(result.score) || 5)),
-        comment: result.comment || '回答已收到',
-        referenceAnswer: result.referenceAnswer || referenceAnswer || '参考答案请查看相关资料',
-      };
-    } catch {
-      // 如果JSON解析失败，尝试从文本中提取分数
-      const scoreMatch = content.match(/score["\s:]+(\d+)/i);
-      const score = scoreMatch ? Math.min(10, Math.max(1, parseInt(scoreMatch[1]))) : 5;
-      
-      return {
-        score,
-        comment: 'AI评价完成',
-        referenceAnswer: referenceAnswer || '参考答案请查看相关资料',
-      };
-    }
+    return {
+      score: Math.min(10, Math.max(1, data.score || 5)),
+      comment: data.comment || '评估完成',
+      referenceAnswer: data.reference_answer || referenceAnswer || '参考答案请查看相关资料',
+    };
   } catch (error) {
     if (error instanceof Error) {
       throw error;
     }
     throw new Error('AI评价失败，请稍后重试');
+  }
+};
+
+// ── 面经提取题目 ──
+
+export interface ExtractedQuestion {
+  question: string;
+  category: string;
+  source: string;
+  key_points: string[];
+  reference_answer: string;
+}
+
+export interface ExtractQuestionsResult {
+  questions: ExtractedQuestion[];
+}
+
+export const extractQuestionsFromText = async (text: string, category: string = '前端'): Promise<ExtractQuestionsResult> => {
+  if (!API_KEY) {
+    throw new Error('未配置 API Key，请检查环境变量');
+  }
+
+  try {
+    const response = await fetchWithRetry(`${API_BASE}/extract-questions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text,
+        category,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      const errorMsg = errorData.detail || `服务异常 (${response.status})`;
+      throw new Error(errorMsg);
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error('题目提取失败，请稍后重试');
   }
 };
 
@@ -320,8 +277,20 @@ export const mockGenerateQuestion = async (jdText: string): Promise<GeneratedQue
   };
 };
 
-// 是否使用模拟服务
+// ── 离线模式 / 模拟服务 ──
 const USE_MOCK = !API_KEY;
+export const OFFLINE_MODE = USE_MOCK || isVercel;
 
-export const aiGenerateQuestion = USE_MOCK ? mockGenerateQuestion : generateQuestion;
+// 统一降级包装：后端不可用时走 mock，不抛错
+export const safeBackendCall = async <T>(call: () => Promise<T>, fallback: T): Promise<T & { offline?: boolean }> => {
+  if (OFFLINE_MODE) return { ...fallback, offline: true };
+  try {
+    return await call();
+  } catch {
+    return { ...fallback, offline: true };
+  }
+};
+
+export const aiGenerateQuestion = (jdText: string, difficulty: 'intern' | 'junior' | 'mid' | 'senior' | 'lead' = 'mid') =>
+  USE_MOCK ? mockGenerateQuestion(jdText) : generateQuestion(jdText, difficulty);
 export const aiEvaluate = USE_MOCK ? mockEvaluate : evaluateAnswer;
