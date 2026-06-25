@@ -1,4 +1,6 @@
-import { API_BASE, OFFLINE_MODE } from './aiService';
+import { API_BASE, OFFLINE_MODE, fetchWithTimeout } from './aiService';
+
+const DIAGNOSIS_TIMEOUT_MS = 180000; // 诊断式面试需要更长时间（3分钟）
 
 const BACKEND_OFFLINE_MSG = '后端未部署，这是作品展示版本。克隆仓库并本地运行可体验完整功能。';
 
@@ -92,7 +94,7 @@ export interface StartInterviewResult {
 
 export const fetchDiagnosis = async (sessionId: string): Promise<CognitiveDiagnosis> => {
   if (OFFLINE_MODE) throw new Error(BACKEND_OFFLINE_MSG);
-  const response = await fetch(`${API_BASE}/agent/diagnosis/${sessionId}`);
+  const response = await fetchWithTimeout(`${API_BASE}/agent/diagnosis/${sessionId}`, {}, DIAGNOSIS_TIMEOUT_MS);
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
     if (err.detail?.includes('不存在')) throw new SessionNotFoundError(sessionId);
@@ -104,18 +106,20 @@ export const fetchDiagnosis = async (sessionId: string): Promise<CognitiveDiagno
 export const startAgentInterview = async (
   resumeText: string,
   difficulty: string = 'mid',
+  jdText?: string,
   focusAreas?: string[]
 ): Promise<StartInterviewResult> => {
   if (OFFLINE_MODE) throw new Error(BACKEND_OFFLINE_MSG);
-  const response = await fetch(`${API_BASE}/agent/start-interview`, {
+  const response = await fetchWithTimeout(`${API_BASE}/agent/start-interview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       resume_text: resumeText,
+      jd_text: jdText || '',
       difficulty,
       focus_areas: focusAreas || [],
     }),
-  });
+  }, DIAGNOSIS_TIMEOUT_MS);
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
     throw new Error(err.detail || `请求失败 (${response.status})`);
@@ -129,7 +133,7 @@ export const submitAgentAnswer = async (
   userAnswer: string
 ): Promise<SubmitAnswerResult> => {
   if (OFFLINE_MODE) throw new Error(BACKEND_OFFLINE_MSG);
-  const response = await fetch(`${API_BASE}/agent/submit-answer`, {
+  const response = await fetchWithTimeout(`${API_BASE}/agent/submit-answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -137,10 +141,24 @@ export const submitAgentAnswer = async (
       question_id: questionId,
       user_answer: userAnswer,
     }),
-  });
+  }, DIAGNOSIS_TIMEOUT_MS);
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
     if (err.detail?.includes('不存在')) throw new SessionNotFoundError(sessionId);
+    throw new Error(err.detail || `请求失败 (${response.status})`);
+  }
+  return response.json();
+};
+
+export const keepSessionAlive = async (sessionId: string): Promise<{ success: boolean; message: string }> => {
+  if (OFFLINE_MODE) throw new Error(BACKEND_OFFLINE_MSG);
+  const response = await fetch(`${API_BASE}/agent/keep-alive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: 'Unknown error' }));
     throw new Error(err.detail || `请求失败 (${response.status})`);
   }
   return response.json();

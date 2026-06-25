@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 const QUESTION_BANK_KEY = 'ai_interview_question_bank';
 const CUSTOM_QUESTIONS_KEY = 'ai_interview_custom_questions';
 const QUESTION_BANK_VERSION_KEY = 'ai_interview_question_bank_version';
-const CURRENT_VERSION = '3.0'; // 更新版本号以触发数据更新
+const CURRENT_VERSION = '3.1'; // 更新版本号以触发数据更新（3.1: 确保全部10个分类加载）
 
 // 初始化题库数据
 const initializeQuestionBank = (): QuestionBankItem[] => {

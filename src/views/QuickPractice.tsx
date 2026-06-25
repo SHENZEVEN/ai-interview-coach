@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Category, CATEGORIES, Question, HistoryRecord } from '../types';
 import { getQuestionsByCategory, updateQuestionStats } from '../utils/questionBank';
@@ -26,6 +26,35 @@ const QuickPractice = () => {
   const [evaluationProgress, setEvaluationProgress] = useState(0); // 0-100 用于圆环形进度条
   const [currentResult, setCurrentResult] = useState<{ score: number; comment: string; referenceAnswer: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // ── 状态持久化：恢复之前的练习会话 ──
+  useEffect(() => {
+    const savedSession = localStorage.getItem('quick-practice-session');
+    if (savedSession) {
+      try {
+        const parsed = JSON.parse(savedSession);
+        // 检查保存时间是否在 30 分钟内
+        const isRecent = Date.now() - parsed.timestamp < 30 * 60 * 1000;
+        if (isRecent && parsed.state === 'practice' && parsed.session) {
+          // 恢复会话状态
+          setState('practice');
+          setSelectedCategory(parsed.session.category);
+          setSession({
+            ...parsed.session,
+            answers: new Map(parsed.session.answers),
+            results: new Map(parsed.session.results),
+            skipped: new Set(parsed.session.skipped),
+          });
+          setCurrentAnswer(parsed.currentAnswer || '');
+          setCurrentResult(parsed.currentResult || null);
+          // 清除保存的状态，避免重复恢复
+          localStorage.removeItem('quick-practice-session');
+        }
+      } catch (e) {
+        console.error('恢复练习会话失败:', e);
+      }
+    }
+  }, []);
 
   const startPractice = useCallback(() => {
     if (!selectedCategory) return;
@@ -142,13 +171,33 @@ const QuickPractice = () => {
     const nextIndex = session.currentIndex + 1;
     if (nextIndex >= session.questions.length) {
       setState('summary');
+      // 练习完成，清除保存的状态
+      localStorage.removeItem('quick-practice-session');
     } else {
-      setSession(prev => ({ ...prev, currentIndex: nextIndex }));
+      setSession(prev => prev ? { ...prev, currentIndex: nextIndex } : null);
       setCurrentAnswer('');
       setCurrentResult(null);
       setError(null);
     }
   };
+
+  // ── 保存练习会话状态 ──
+  useEffect(() => {
+    if (session && state === 'practice') {
+      localStorage.setItem('quick-practice-session', JSON.stringify({
+        state,
+        session: {
+          ...session,
+          answers: Array.from(session.answers.entries()),
+          results: Array.from(session.results.entries()),
+          skipped: Array.from(session.skipped),
+        },
+        currentAnswer,
+        currentResult,
+        timestamp: Date.now(),
+      }));
+    }
+  }, [session, state, currentAnswer, currentResult]);
 
   const handleRestart = () => {
     setState('select');
@@ -185,18 +234,26 @@ const QuickPractice = () => {
     <div>
       {state === 'select' && (
         <div className="practice-card">
+          <div className="back-button-container">
+            <button className="back-btn" onClick={() => window.history.back()}>
+              ← 返回
+            </button>
+          </div>
           <div className="category-section">
             <div className="category-label">选择类别：</div>
             <div className="category-buttons">
-              {CATEGORIES.map((cat) => (
-                <button
-                  key={cat}
-                  className={`category-btn ${selectedCategory === cat ? 'primary' : 'outline'}`}
-                  onClick={() => setSelectedCategory(cat)}
-                >
-                  {cat}
-                </button>
-              ))}
+              {CATEGORIES.map((cat) => {
+                const count = getQuestionsByCategory(cat).length;
+                return (
+                  <button
+                    key={cat}
+                    className={`category-btn ${selectedCategory === cat ? 'primary' : 'outline'}`}
+                    onClick={() => setSelectedCategory(cat)}
+                  >
+                    {cat} <span className="category-count">({count})</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
           <div className="divider" />
@@ -215,6 +272,19 @@ const QuickPractice = () => {
       {state === 'practice' && session && currentQuestion && (
         <div>
           <div className="practice-card">
+            <div className="back-button-container">
+              <button 
+                className="back-btn" 
+                onClick={() => {
+                  if (window.confirm('确定要退出练习吗？当前进度将被保存。')) {
+                    handleRestart();
+                    window.history.back();
+                  }
+                }}
+              >
+                ← 返回
+              </button>
+            </div>
             <div className="progress-section">
               <div className="progress-info">
                 <span className="progress-current">{session.currentIndex + 1}</span>

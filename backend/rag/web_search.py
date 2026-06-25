@@ -74,7 +74,7 @@ def _search_ddg_html(query: str, max_results: int = 8) -> list[dict]:
     data = {"q": query, "b": ""}
 
     try:
-        resp = requests.post(url, headers=headers, data=data, timeout=15)
+        resp = requests.post(url, headers=headers, data=data, timeout=5)
         resp.raise_for_status()
     except requests.RequestException as e:
         print(f"[web_search] DDG HTML search failed: {e}")
@@ -149,7 +149,7 @@ def _search_ddg_lite(query: str, max_results: int = 8) -> list[dict]:
     params = {"q": query}
 
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp = requests.get(url, headers=headers, params=params, timeout=5)
         resp.raise_for_status()
     except requests.RequestException as e:
         print(f"[web_search] DDG Lite search failed: {e}")
@@ -192,7 +192,7 @@ def _search_ddg_api(query: str, max_results: int = 8) -> list[dict]:
     }
 
     try:
-        resp = requests.get(url, headers={"User-Agent": UA}, params=params, timeout=15)
+        resp = requests.get(url, headers={"User-Agent": UA}, params=params, timeout=5)
         resp.raise_for_status()
         data = resp.json()
     except (requests.RequestException, json.JSONDecodeError) as e:

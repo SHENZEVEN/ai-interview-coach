@@ -11,7 +11,6 @@ export const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/
 export const AGNES_API_BASE = 'https://apihub.agnes-ai.com/v1'; // Agnes 直连（简历拷打用）
 
 // Vercel 部署时后端不在 → 优雅降级，不弹红色报错
-const isProduction = import.meta.env.PROD;
 const isVercel = typeof window !== 'undefined' && window.location.hostname.includes('vercel.app');
 
 const TIMEOUT_MS = 30000;
@@ -26,10 +25,10 @@ export const buildHeaders = () => ({
 // 延迟函数
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// 带超时的 fetch
-const fetchWithTimeout = async (url: string, options: RequestInit): Promise<Response> => {
+// 带超时的 fetch（支持自定义超时时间）
+export const fetchWithTimeout = async (url: string, options: RequestInit, timeoutMs: number = TIMEOUT_MS): Promise<Response> => {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(url, {
@@ -131,7 +130,6 @@ export const evaluateAnswer = async (
   }
 
   try {
-    const questionText = typeof question === 'string' ? question : question.text;
     const referenceAnswer = typeof question === 'string' ? '' : question.referenceAnswer;
 
     const response = await fetchWithRetry(`${API_BASE}/evaluate-answer`, {
@@ -140,7 +138,7 @@ export const evaluateAnswer = async (
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        question: questionText,
+        question: typeof question === 'string' ? question : question.text,
         user_answer: userAnswer,
         reference_answer: referenceAnswer,
         context: context || '',
@@ -285,7 +283,8 @@ export const OFFLINE_MODE = USE_MOCK || isVercel;
 export const safeBackendCall = async <T>(call: () => Promise<T>, fallback: T): Promise<T & { offline?: boolean }> => {
   if (OFFLINE_MODE) return { ...fallback, offline: true };
   try {
-    return await call();
+    const result = await call();
+    return { ...result, offline: false };
   } catch {
     return { ...fallback, offline: true };
   }

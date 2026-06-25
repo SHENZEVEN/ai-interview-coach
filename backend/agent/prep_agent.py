@@ -4,23 +4,26 @@
 生成：公司/产品调研、JD深度解读、定制自我介绍、STAR预案、
 高频题预测、Gap清单。支持从认知诊断结果反向更新。
 
-v2.1: 集成真实联网搜索 + prep_mode 速度模式。
+简化版：一次 LLM 调用完成，不依赖联网搜索。
 """
 
 import json
 import os
 import re
-import concurrent.futures
-from typing import Optional
+import time
+from pathlib import Path
+from typing import Optional, Callable
 
-from rag.web_search import (
-    search_company,
-    search_interview_experiences,
-    format_for_llm,
-)
+# ── 加载 interview-prep skill 方法论（注入到 system prompt）──
+_METHODOLOGY_PATH = Path(__file__).resolve().parent.parent / "references" / "interview_prep_methodology.md"
+FALLBACK_METHODOLOGY = ""
+try:
+    FALLBACK_METHODOLOGY = _METHODOLOGY_PATH.read_text(encoding="utf-8")
+    print(f"[prep_agent] Loaded methodology: {len(FALLBACK_METHODOLOGY)} chars")
+except Exception as e:
+    print(f"[prep_agent] WARNING: Failed to load methodology: {e}")
+
 import uuid
-import requests
-from typing import Optional
 
 from langchain_openai import ChatOpenAI
 
@@ -164,7 +167,8 @@ def build_prep_llm() -> ChatOpenAI:
         api_key=os.getenv("LLM_API_KEY", ""),
         base_url=os.getenv("LLM_API_BASE", "https://apihub.agnes-ai.com/v1"),
         temperature=0.3,  # 更低温度以确保结构化输出
-        timeout=120,
+        timeout=300,  # 增加到 5 分钟
+        max_retries=3,
     )
 
 
@@ -198,9 +202,6 @@ class PrepAgent:
             direction: 岗位方向 (A-G, 见 ROLE_DIRECTIONS)
             difficulty: 目标职级 (intern/junior/mid/senior/lead)
             prep_mode: 准备深度 (rapid/standard/deep)
-                - rapid: 速准版 — 跳过深度调研，3分钟生成核心5章
-                - standard: 标准版 — 完整调研+8章文档
-                - deep: 深研版 — 标准版+竞品对比+延伸阅读
 
         Returns:
             完整的 prep 文档 dict + prep_id
@@ -208,84 +209,17 @@ class PrepAgent:
         prep_id = uuid.uuid4().hex[:12]
         direction_label = ROLE_DIRECTIONS.get(direction, "其他")
 
-        # ── 联网搜索（并行）──
-        web_context = ""
-        sources_list = []
+        # ── 构建 system prompt（注入 methodology）──
+        system_prompt = f"""{FALLBACK_METHODOLOGY}
 
-        if prep_mode in ("standard", "deep") and company_name:
-            # 并行：联网搜索 + LLM 训练数据知识提取
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                future_company = executor.submit(self._run_company_search, company_name)
-                future_interviews = executor.submit(
-                    search_interview_experiences, company_name, role_name
-                )
-                future_llm_company = executor.submit(self._try_llm_company_info, company_name, direction, direction_label)
-                future_llm_interview = executor.submit(
-                    self._try_llm_interview_knowledge, company_name, role_name, direction, direction_label
-                )
+重要规则：
+1. 严格按照JSON格式输出，不要JSON之外的文字
+2. 公司调研章节标注'基于训练数据'
+3. 若方向为E(AI产品)，关注AI基础认知/产品设计/行业格局类题目
+4. 若方向为F(AI全栈开发)，关注LLM理论/RAG实战/Agent开发/系统设计/编程算法类题目"""
 
-                company_results = future_company.result(timeout=30)
-                interview_results = future_interviews.result(timeout=30)
-                llm_company_info = future_llm_company.result(timeout=30)
-                llm_interview_knowledge = future_llm_interview.result(timeout=30)
-
-            has_web_results = bool(company_results or interview_results)
-
-            if has_web_results:
-                # 联网搜索成功 → 搜索为主，LLM为辅
-                if company_results:
-                    web_context += f"""
-## 🌐 联网搜索 · 公司信息
-{format_for_llm(company_results.get('overview', [])[:4])}
-**近期动态**：
-{format_for_llm(company_results.get('recent_news', [])[:3])}
-**AI战略**：
-{format_for_llm(company_results.get('ai_strategy', [])[:3])}
-**团队/文化**：
-{format_for_llm(company_results.get('culture', [])[:3])}
-"""
-                    for cat in ["overview", "recent_news", "ai_strategy", "culture"]:
-                        for r in company_results.get(cat, []):
-                            sources_list.append({"title": r["title"], "url": r["url"]})
-
-                if interview_results:
-                    web_context += f"""
-## 🌐 联网搜索 · 真实面经
-{format_for_llm(interview_results[:8])}
-"""
-                    for r in interview_results[:8]:
-                        sources_list.append({"title": r["title"], "url": r["url"]})
-
-                # LLM 知识作为补充（轻量提示）
-                if llm_company_info:
-                    web_context += f"""
-## 📚 LLM补充 · 公司背景（基于训练数据）
-{json.dumps(llm_company_info, ensure_ascii=False)}
-"""
-            else:
-                # 联网搜索完全失败 → LLM 训练数据知识作为主要来源
-                llm_context = self._format_llm_knowledge_context(llm_company_info, llm_interview_knowledge)
-                if llm_context:
-                    web_context += llm_context
-                    sources_list.append({"title": "LLM训练数据", "url": "基于模型训练数据，非实时搜索"})
-                else:
-                    web_context += "\n（联网搜索失败且LLM训练数据中未找到该公司的足够信息。建议手动补充公司资料。）\n"
-
-        else:
-            # rapid 模式 + 无公司名：只用 LLM 知识
-            llm_company_info = self._try_llm_company_info(company_name, direction, direction_label) if company_name else None
-            llm_interview = self._try_llm_interview_knowledge(company_name, role_name, direction, direction_label) if company_name else None
-            llm_context = self._format_llm_knowledge_context(llm_company_info, llm_interview)
-            if llm_context:
-                web_context = llm_context
-                sources_list.append({"title": "LLM训练数据", "url": "rapid模式 — 基于模型训练数据"})
-            elif llm_company_info:
-                web_context = f"## 公司背景（LLM知识，非实时搜索）\n{json.dumps(llm_company_info, ensure_ascii=False)}"
-
-        # ── 构建 prompt ──
-        mode_instruction = self._get_mode_instruction(prep_mode, direction)
-
-        user_prompt = f"""## 面试准备任务 [{prep_mode.upper()}模式]
+        # ── 构建 user prompt（简历+JD+公司名+方向上下文）──
+        user_prompt = f"""## 面试准备任务
 
 **目标岗位**：{role_name}
 **目标公司**：{company_name}
@@ -298,38 +232,64 @@ class PrepAgent:
 **岗位 JD**：
 {jd_text or "未提供"}
 
-{web_context}
-
-{mode_instruction}
-
 请根据上述信息生成完整面试准备文档。严格按照JSON格式输出。
 
 特别要求：
 1. JD逐条匹配分析：先找简历证据再下判断，没有证据的标"-"
 2. 自我介绍：≤250字，口语化，针对该岗位编排
-3. 预测题目：含面经预测 + 岗位专项 + JD推导 + 简历深挖四种来源。如有真实面经搜索结果，优先从中提取
+3. 预测题目：含面经预测 + 岗位专项 + JD推导 + 简历深挖四种来源
 4. Gap清单：按优先级1/2/3分组，含具体补课行动
-5. 若方向为E(AI产品)，关注AI基础认知/产品设计/行业格局类题目
-6. 若方向为F(AI全栈开发)，关注LLM理论/RAG实战/Agent开发/系统设计/编程算法类题目
-7. 公司调研章节必须标注信息来源（联网搜索结果标注真实URL，LLM知识标注'基于训练数据'）
-8. coaching_tips：基于简历和JD差距，给出3-5条针对性备考建议（具体可操作的建议，而非泛泛而谈）
-9. ask_back_questions：生成5-8个反问面试官的问题，覆盖公司战略/团队文化/岗位发展/技术方向/工作节奏等维度，体现求职者的思考深度"""
+5. coaching_tips：基于简历和JD差距，给出3-5条针对性备考建议（具体可操作的建议，而非泛泛而谈）
+6. ask_back_questions：生成5-8个反问面试官的问题，覆盖公司战略/团队文化/岗位发展/技术方向/工作节奏等维度，体现求职者的思考深度"""
 
-        # 调用 LLM
-        result = self.llm.invoke(user_prompt)
+        # 调用 LLM（一次调用搞定）
+        result = self.llm.invoke(system_prompt + "\n\n" + user_prompt)
         content = result.content if hasattr(result, 'content') else str(result)
+
+        # DEBUG: 打印完整 LLM 输出信息（处理 Windows 编码问题）
+        try:
+            print(f"[prep_agent] LLM output length: {len(content)} chars")
+            # 移除 emoji 和特殊字符以避免编码问题
+            safe_content = content.encode('utf-8', errors='replace').decode('utf-8')
+            print(f"[prep_agent] LLM output (first 500 chars): {safe_content[:500]}")
+        except Exception as e:
+            print(f"[prep_agent] Failed to print LLM output: {e}")
 
         # 解析 JSON
         prep_data = self._extract_json(content)
+        
+        # DEBUG: 打印解析结果
+        try:
+            print(f"[prep_agent] Extracted JSON keys: {list(prep_data.keys())}")
+            if not prep_data:
+                print(f"[prep_agent] WARNING: _extract_json returned empty dict!")
+                # 尝试直接解析
+                try:
+                    prep_data = json.loads(content)
+                    print(f"[prep_agent] Direct JSON parse succeeded!")
+                except json.JSONDecodeError as e:
+                    print(f"[prep_agent] Direct JSON parse failed: {e}")
+                    # 打印原始内容的开头部分来分析格式
+                    print(f"[prep_agent] Content starts with: {repr(content[:100])}")
+            else:
+                # 打印部分数据内容
+                print(f"[prep_agent] jd_analysis exists: {'jd_analysis' in prep_data}")
+                print(f"[prep_agent] chapter_2_jd_analysis exists: {'chapter_2_jd_analysis' in prep_data}")
+                print(f"[prep_agent] coaching_tips count: {len(prep_data.get('coaching_tips', []))}")
+        except Exception as e:
+            print(f"[prep_agent] Failed to print JSON keys: {e}")
 
         # 补充默认值
         prep_data = self._ensure_structure(prep_data, resume_text, jd_text)
-
-        # 覆盖/补充公司调研的来源标注
-        if sources_list and prep_data.get("company_research"):
-            prep_data["company_research"]["sources"] = [
-                s["url"] for s in sources_list[:10]
-            ]
+        
+        # DEBUG: 打印处理后的数据
+        try:
+            print(f"[prep_agent] After _ensure_structure keys: {list(prep_data.keys())}")
+            print(f"[prep_agent] After _ensure_structure jd_analysis: {prep_data.get('jd_analysis', {})}")
+            print(f"[prep_agent] After _ensure_structure predicted_questions count: {len(prep_data.get('predicted_questions', []))}")
+            print(f"[prep_agent] After _ensure_structure coaching_tips count: {len(prep_data.get('coaching_tips', []))}")
+        except Exception as e:
+            print(f"[prep_agent] Failed to print processed data: {e}")
 
         # 注入额外结构化信息
         prep_data["meta"] = {
@@ -341,14 +301,78 @@ class PrepAgent:
             "difficulty": difficulty,
             "prep_mode": prep_mode,
             "generated_at": self._now_iso(),
-            "has_web_search": bool(sources_list),
-            "source_count": len(sources_list),
         }
 
         # 存储
         _prep_store[prep_id] = prep_data
 
         return prep_data
+
+    def generate_stream(
+        self,
+        resume_text: str,
+        jd_text: Optional[str] = None,
+        company_name: str = "",
+        role_name: str = "",
+        direction: str = "E",
+        difficulty: str = "mid",
+        prep_mode: str = "standard",
+        stream_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """流式生成面试准备文档。
+
+        Args:
+            resume_text: 简历文本
+            jd_text: JD文本
+            company_name: 公司名称
+            role_name: 岗位名称
+            direction: 岗位方向
+            difficulty: 难度级别
+            prep_mode: 准备模式
+            stream_callback: 流式回调函数，接收每块生成的内容
+
+        Returns:
+            完整的 JSON 字符串
+        """
+        prep_id = uuid.uuid4().hex[:12]
+        direction_label = ROLE_DIRECTIONS.get(direction, "其他")
+
+        # ── 构建 system prompt（简化版，加速生成）──
+        system_prompt = f"""你是一位专业的AI面试教练。请根据简历和JD生成面试准备文档。
+
+重要规则：
+1. 严格按照JSON格式输出
+2. 输出完整的JSON对象，不要省略任何字段
+3. 包含所有必要章节：meta, company_research, jd_analysis, self_intro, star_stories, predicted_questions, gap_analysis, coaching_tips, ask_back_questions"""
+
+        # ── 构建 user prompt（精简版）──
+        user_prompt = f"""## 面试准备任务
+
+**目标岗位**：{role_name}
+**目标公司**：{company_name}
+**岗位方向**：{direction_label}
+**目标职级**：{difficulty}
+
+**候选人简历**：
+{resume_text or "未提供"}
+
+**岗位 JD**：
+{jd_text or "未提供"}
+
+请生成完整的面试准备文档JSON对象。"""
+
+        # 调用 LLM（支持流式输出）
+        if stream_callback:
+            full_content = ""
+            for chunk in self.llm.stream(system_prompt + "\n\n" + user_prompt):
+                content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                full_content += content
+                stream_callback(content)
+            return full_content
+        else:
+            result = self.llm.invoke(system_prompt + "\n\n" + user_prompt)
+            content = result.content if hasattr(result, 'content') else str(result)
+            return content
 
     def match_resume_jd(self, resume_text: str, jd_text: str) -> dict:
         """轻量简历-JD匹配分析，不复用完整8章生成流程。
@@ -408,6 +432,21 @@ class PrepAgent:
 
         result = self.llm.invoke(MATCH_SYSTEM_PROMPT + "\n\n" + user_prompt)
         content = result.content if hasattr(result, 'content') else str(result)
+        
+        # 调试：将 LLM 输出写入文件（避免终端编码问题）
+        try:
+            import os
+            log_dir = "./logs"
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, f"llm_output_{int(time.time())}.txt")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(f"=== LLM Output ===\n")
+                f.write(f"Length: {len(content)} chars\n")
+                f.write(f"Content:\n{content}\n")
+                f.write(f"\n=== End ===\n")
+        except Exception as e:
+            pass
+        
         data = self._extract_json(content)
 
         # 确保必要字段存在
@@ -428,14 +467,116 @@ class PrepAgent:
 
         return data
 
-    def refine_with_diagnosis(self, prep_id: str, diagnosis: dict) -> dict:
+    def _parse_prep_text(self, text: str) -> dict:
+        """LLM 解析非结构化准备文档文本（.md/.docx）为结构化 prep dict。"""
+        prompt = f"""你是一个面试准备文档解析器。请将以下非结构化的面试准备文档文本解析为结构化的 JSON。
+
+{FALLBACK_METHODOLOGY[:1500] if FALLBACK_METHODOLOGY else ''}
+
+**输入文本**：
+{text[:6000]}
+
+请提取并返回以下 JSON 结构（无法提取的字段用空值）：
+{{
+  "meta": {{"company_name": "", "role_name": "", "direction": "", "difficulty": "mid", "prep_mode": "standard"}},
+  "company_research": {{"overview": "", "products": [], "culture": "", "recent_news": []}},
+  "jd_analysis": {{"requirements": [], "jd_summary": ""}},
+  "self_intro": "",
+  "star_stories": [],
+  "predicted_questions": [{{"question": "", "category": "", "difficulty": "medium", "key_points": []}}],
+  "gap_analysis": {{"strengths": [], "weaknesses": [], "mitigation_strategies": []}},
+  "coaching_tips": [],
+  "ask_back_questions": []
+}}
+
+只返回 JSON，不要其他内容。"""
+        result = self.llm.invoke(prompt)
+        content = result.content if hasattr(result, 'content') else str(result)
+        data = self._extract_json(content)
+        data = self._ensure_structure(data)
+        # 确保有基本 meta
+        if "meta" not in data:
+            data["meta"] = {}
+        data["meta"].setdefault("prep_id", f"ext-{uuid.uuid4().hex[:8]}")
+        data["meta"].setdefault("company_name", "外部导入")
+        data["meta"].setdefault("role_name", "")
+        data["meta"].setdefault("generated_at", self._now_iso())
+        data["meta"].setdefault("direction", "E")
+        data["meta"].setdefault("difficulty", "mid")
+        data["meta"].setdefault("prep_mode", "standard")
+        data["meta"].setdefault("has_web_search", False)
+        data["meta"].setdefault("source_count", 0)
+        return data
+
+    def _parse_diagnosis_text(self, text: str) -> dict:
+        """LLM 解析非结构化诊断报告文本（.md/.docx）为结构化 diagnosis dict。"""
+        prompt = f"""你是一个面试诊断报告解析器。请将以下面试回顾/诊断文本解析为结构化的 JSON。
+
+**输入文本**：
+{text[:6000]}
+
+请提取并返回以下 JSON 结构（无法提取的字段用空数组或 0）：
+{{
+  "overall_score": 0,
+  "weaknesses": [],
+  "strengths": [],
+  "knowledge_map": [{{"name": "", "coverage": 0.0, "depth_score": 0, "keywords_mentioned": [], "missing_concepts": []}}],
+  "timeline_data": [{{"question": "", "score": 0, "category": ""}}],
+  "improvement_plan": []
+}}
+
+规则：
+- overall_score: 如果文本中有总分/综合评分，提取为 0-100 的数字；否则根据文本评价倾向估算（正面多→70+，负面多→50-）
+- weaknesses: 提取所有提到的弱点、不足、需要改进的地方
+- strengths: 提取所有提到的优势、强项、表现好的地方
+- knowledge_map: 从文本中识别考察的知识领域及其覆盖程度
+- timeline_data: 如果文本提到具体题目和得分，逐条提取
+- improvement_plan: 提取所有改进建议
+
+只返回 JSON，不要其他内容。"""
+        result = self.llm.invoke(prompt)
+        content = result.content if hasattr(result, 'content') else str(result)
+        data = self._extract_json(content)
+        # 确保必要字段存在
+        data.setdefault("overall_score", 0)
+        data.setdefault("weaknesses", [])
+        data.setdefault("strengths", [])
+        data.setdefault("knowledge_map", [])
+        data.setdefault("timeline_data", [])
+        data.setdefault("improvement_plan", [])
+        return data
+
+    def refine_with_diagnosis(self, prep_id: str, diagnosis: dict, prep_data: dict = None,
+                              prep_text: str = None, diagnosis_text: str = None) -> dict:
         """基于认知诊断结果反向更新面试准备。
 
         闭环核心：练习暴露的问题 → 更新 Gap 清单和预测题目。
+
+        prep_data: 可选，传入则直接使用（绕过 _prep_store 内存存储，解决重启丢失问题）。
+        prep_text: 可选，原始准备文档文本（.md/.docx），当 prep_data 为空时 LLM 解析后使用。
+        diagnosis_text: 可选，原始诊断报告文本（.md/.docx），当 diagnosis 无结构化数据时 LLM 解析后使用。
         """
-        prep = _prep_store.get(prep_id)
+        # 解析 prep：结构化数据优先，否则尝试从文本解析
+        if prep_data:
+            prep = prep_data
+        elif prep_text:
+            prep = self._parse_prep_text(prep_text)
+        else:
+            prep = _prep_store.get(prep_id)
         if not prep:
-            raise ValueError(f"Prep {prep_id} 不存在")
+            raise ValueError(f"Prep {prep_id} 不存在（后端可能已重启，请从已保存文档重新导入）")
+
+        # 解析 diagnosis：如果传入的 diagnosis 缺少关键字段，尝试从文本解析
+        has_structured = bool(diagnosis.get("weaknesses") or diagnosis.get("knowledge_map"))
+        if not has_structured and diagnosis_text:
+            parsed_diag = self._parse_diagnosis_text(diagnosis_text)
+            # 合并：parsed 提供结构化字段，原始 diagnosis 中的其他字段保留
+            diagnosis = {**parsed_diag, **diagnosis}
+        elif not has_structured:
+            # 既无结构化数据也无文本 — 用最小兼容数据让 refine 继续
+            diagnosis.setdefault("weaknesses", [])
+            diagnosis.setdefault("knowledge_map", [])
+            diagnosis.setdefault("timeline_data", [])
 
         weaknesses = diagnosis.get("weaknesses", [])
         knowledge_map = diagnosis.get("knowledge_map", [])
@@ -496,211 +637,33 @@ class PrepAgent:
             raise ValueError(f"Prep {prep_id} 不存在")
         return _prep_store[prep_id]
 
-    def _run_company_search(self, company_name: str) -> dict:
-        """执行公司联网搜索（非阻塞wrapper，捕获异常）。"""
-        try:
-            return search_company(company_name)
-        except Exception as e:
-            print(f"[prep_agent] Company search failed: {e}")
-            return {}
-
-    def _try_llm_company_info(self, company_name: str, direction: str = "G", direction_label: str = "其他") -> Optional[dict]:
-        """用 LLM 训练数据提取公司背景知识（联网搜索失败时的深度回退）。
-
-        根据岗位方向，从 LLM 训练数据中提取该公司对应该方向有价值的信息。
-        E岗(AI产品)侧重产品矩阵和AI策略，F岗(AI全栈)侧重技术栈和AI Infra。
-        """
-        if not company_name:
-            return None
-
-        # 获取该方向的考察重点作为提取指引
-        dir_context = DIRECTION_INTERVIEW_CONTEXT.get(direction, DIRECTION_INTERVIEW_CONTEXT["G"])
-        # 提取"公司知识提取重点"部分
-        company_focus = ""
-        for line in dir_context.split("\n"):
-            if "公司知识提取重点" in line:
-                company_focus = line.strip()
-                break
-
-        try:
-            prompt = f"""你是一个企业信息数据库。请用你的训练数据尽可能详细地介绍"{company_name}"公司。
-
-当前用户面试方向：{direction_label}，该方向关注的公司信息维度：
-{company_focus}
-
-请针对以上维度，优先提取与该面试方向最相关的公司信息。JSON格式返回：
-{{
-  "description": "公司一句话定位",
-  "size": "员工规模（如万人/千人/百人）",
-  "funding": "融资阶段（如已上市/Pre-IPO/D轮等）",
-  "founded": "成立年份",
-  "main_products": ["核心产品1", "核心产品2", "核心产品3"],
-  "ai_strategy": "AI/大模型相关布局（如有关）— 这对AI方向面试尤其重要",
-  "tech_stack_hint": "技术栈倾向（如已知）— AI全栈方向特别关注",
-  "competitors": ["竞品1", "竞品2"],
-  "culture_signals": "团队文化特点、加班情况、技术氛围",
-  "hiring_trend": "近期招聘动态/团队扩张方向（如有关）",
-  "direction_specific_note": "针对{direction_label}面试者，该公司最值得关注的1-2个特点",
-  "confidence": "high/medium/low — 你对该公司的了解程度",
-  "note": "此信息完全基于LLM训练数据（截止日期前的知识），非实时搜索，可能已过时"
-}}"""
-            result = self.llm.invoke(prompt)
-            content = result.content if hasattr(result, 'content') else str(result)
-            info = self._extract_json(content)
-            if info and info.get("confidence") in ("high", "medium"):
-                return info
-            elif info:
-                info["note"] = "⚠️ 低置信度：该公司的训练数据覆盖有限，建议补充联网搜索"
-                return info
-            return None
-        except Exception:
-            return None
-
-    def _try_llm_interview_knowledge(
-        self, company_name: str, role_name: str, direction: str = "G", direction_label: str = "其他"
-    ) -> Optional[dict]:
-        """用 LLM 训练数据合成面试经验，按岗位方向定制考察重点。
-
-        每个方向有独立的 DIRECTION_INTERVIEW_CONTEXT，描述该岗位面试的：
-        - 核心能力考察维度
-        - 典型面试题类型
-        - 深挖方向（内行才知道的考察重点）
-        - 公司知识提取重点
-
-        这比泛泛地问"介绍一下面试流程"能激活 LLM 训练数据中精细得多的记忆。
-        """
-        if not company_name and not role_name:
-            return None
-
-        dir_context = DIRECTION_INTERVIEW_CONTEXT.get(direction, DIRECTION_INTERVIEW_CONTEXT["G"])
-
-        try:
-            prompt = f"""你是一个面试顾问知识库，专门研究各公司的面试风格和考察重点。
-
-{dir_context}
-
-现在请针对"{company_name}"的"{role_name}"岗位（方向：{direction_label}），用你的训练数据回答：
-
-1. 你在训练数据中见过该公司的{direction_label}面试讨论吗？面试流程是什么？
-2. 该方向特有的高频考点和题目类型是什么？
-3. 该公司的面试风格有何独特之处（跟同行业其他公司比）？
-4. 如果你训练数据中没见过该公司的面经，坦诚说明，并给出该行业/岗位的通用面试模式。
-
-JSON格式返回：
-{{
-  "typical_process": "典型面试流程（如：简历筛选→笔试→N轮技术面→HR面），标注是基于该公司面经还是行业通用模式",
-  "common_topics": ["高频考点1 — 需要与{direction_label}方向直接相关", "考点2", "考点3", "考点4", "考点5"],
-  "difficulty_level": "偏低/中等/偏高/极高",
-  "unique_style": "面试风格特点 — 与其他公司的区别（如：更重算法/更重项目深挖/更重BQ行为面试等）",
-  "what_they_really_test": "表面考察X，实际在考察Y — 面试官没说出口的真实意图",
-  "role_specific_advice": "针对{direction_label}面试的特别建议 — 不要泛泛而谈",
-  "common_mistakes": ["该方向面试者常犯错误1", "错误2"],
-  "sample_questions_from_training": [
-    {{"question": "与{direction_label}方向直接相关的具体题目1", "category": "分类"}},
-    {{"question": "题目2", "category": "分类"}},
-    {{"question": "题目3", "category": "分类"}},
-    {{"question": "题目4", "category": "分类"}},
-    {{"question": "题目5", "category": "分类"}}
-  ],
-  "is_from_company_specific_data": true,
-  "confidence": "high/medium/low",
-  "note": "基于LLM训练数据中见过的面经和面试讨论，非实时搜索。标注了哪些是该公司特有问题、哪些是行业通用问题。"
-}}"""
-            result = self.llm.invoke(prompt)
-            content = result.content if hasattr(result, 'content') else str(result)
-            return self._extract_json(content)
-        except Exception:
-            return None
-
-    def _format_llm_knowledge_context(self, company_info: Optional[dict], interview_knowledge: Optional[dict]) -> str:
-        """将 LLM 训练数据知识格式化为 prompt 上下文，标注来源以区别于实时搜索结果。"""
-        parts = []
-        parts.append("\n## 📚 LLM训练数据知识（非实时搜索，可能已过时）\n")
-
-        if company_info and company_info.get("confidence") != "low":
-            parts.append(f"""**公司概况**（置信度：{company_info.get('confidence', 'unknown')}）
-- 定位：{company_info.get('description', '未知')}
-- 规模：{company_info.get('size', '未知')} | 成立：{company_info.get('founded', '未知')} | 融资：{company_info.get('funding', '未知')}
-- 核心产品：{', '.join(company_info.get('main_products', []))}
-- AI策略：{company_info.get('ai_strategy', company_info.get('ai_focus', '未提及'))}
-- 技术栈倾向：{company_info.get('tech_stack_hint', '未知')}
-- 竞品格局：{', '.join(company_info.get('competitors', []))}
-- 团队文化：{company_info.get('culture_signals', '未提及')}
-- 招聘动态：{company_info.get('hiring_trend', '未提及')}
-- 面试方向关注：{company_info.get('direction_specific_note', '')}
-- {company_info.get('note', '')}
-""")
-
-        if interview_knowledge and interview_knowledge.get("confidence") != "low":
-            parts.append(f"""**面试相关**（置信度：{interview_knowledge.get('confidence', 'unknown')}）
-- 典型流程：{interview_knowledge.get('typical_process', '未知')}
-- 高频考点：{', '.join(interview_knowledge.get('common_topics', []))}
-- 难度：{interview_knowledge.get('difficulty_level', '未知')} | 风格：{interview_knowledge.get('unique_style', '未知')}
-- 面试官真实意图：{interview_knowledge.get('what_they_really_test', '未提及')}
-- 方向专属建议：{interview_knowledge.get('role_specific_advice', '无')}
-""")
-
-            mistakes = interview_knowledge.get('common_mistakes', [])
-            if mistakes:
-                parts.append("**常见错误**：")
-                for m in mistakes:
-                    parts.append(f"  - ⚠️ {m}")
-
-            sample_qs = interview_knowledge.get('sample_questions_from_training', [])
-            if sample_qs:
-                parts.append("**训练数据中见过的题目**：")
-                for q in sample_qs:
-                    parts.append(f"  - [{q.get('category', '综合')}] {q.get('question', '')}")
-
-            parts.append(f"\n{interview_knowledge.get('note', '')}")
-
-        if not company_info and not interview_knowledge:
-            parts.append("（LLM训练数据中未找到该公司/岗位的足够信息，请优先使用联网搜索或手动补充。）\n")
-        else:
-            parts.append("\n> ⚠️ 以上内容来自LLM训练数据，非实时搜索。请在生成面试准备文档时：")
-            parts.append("> 1. 公司调研章节标注来源为'基于训练数据'")
-            parts.append("> 2. 如与搜索到的实时信息冲突，以实时信息为准")
-            parts.append("> 3. 对于无法验证的具体数据（融资额、员工数等），避免给出精确数字\n")
-
-        return "\n".join(parts)
-
-    def _get_mode_instruction(self, prep_mode: str, direction: str) -> str:
-        """根据准备模式返回不同的生成指令。"""
-        if prep_mode == "rapid":
-            return """**速准模式指令**：
-- 跳过深度公司调研（已有联网搜索结果足以）
-- 公司调研精简为3-5行概述
-- 预测题目精简为5道核心题
-- STAR预案只生成最相关的2个项目
-- Gap清单只输出P1（必须补的前5条）
-- 总体输出字数精简30%"""
-        elif prep_mode == "deep":
-            extra = ""
-            if direction == "E":
-                extra = "\n- E岗追加：深度AI产品分析，端到端拆解一个AI功能"
-            elif direction == "F":
-                extra = "\n- F岗追加：技术博客解析+GitHub开源分析+核心技术栈推断"
-            return f"""**深研模式指令**：
-- 竞品格局扩展为详细对比表
-- 反问清单扩展为10条
-- 附加3-5篇延伸阅读链接{extra}
-- STAR预案生成3个项目，每个3条追问
-- 公司调研章节尽可能详细"""
-        else:
-            return "**标准模式**：生成完整8章文档，每章节保持标准深度。"
-
     @staticmethod
     def _now_iso() -> str:
         from datetime import datetime, timezone
         return datetime.now(timezone.utc).isoformat()
 
     def _extract_json(self, text: str) -> dict:
-        """从 LLM 输出提取 JSON。"""
+        """从 LLM 输出提取 JSON，支持多种格式和错误恢复。"""
         try:
+            # 尝试 1: 查找 markdown 代码块中的 JSON
             match = re.search(r'```json\s*([\s\S]*?)\s*```', text)
             if match:
-                return json.loads(match.group(1))
-            # 尝试直接找 JSON 对象
+                cleaned = self._clean_json(match.group(1))
+                try:
+                    return json.loads(cleaned)
+                except json.JSONDecodeError:
+                    pass
+            
+            # 尝试 2: 查找任何代码块
+            match = re.search(r'```[\s\S]*?\n([\s\S]*?)\s*```', text)
+            if match:
+                cleaned = self._clean_json(match.group(1))
+                try:
+                    return json.loads(cleaned)
+                except json.JSONDecodeError:
+                    pass
+            
+            # 尝试 3: 直接找 JSON 对象（处理嵌套）
             brace_count = 0
             start = -1
             for i, ch in enumerate(text):
@@ -711,16 +674,154 @@ JSON格式返回：
                 elif ch == '}':
                     brace_count -= 1
                     if brace_count == 0 and start >= 0:
+                        json_str = text[start:i+1]
+                        cleaned = self._clean_json(json_str)
                         try:
-                            return json.loads(text[start:i+1])
+                            return json.loads(cleaned)
                         except json.JSONDecodeError:
                             start = -1
         except (json.JSONDecodeError, AttributeError):
             pass
         return {}
+    
+    def _clean_json(self, text: str) -> str:
+        """清理 JSON 字符串中的常见问题。"""
+        cleaned = text.strip()
+        
+        # 处理 Windows 换行符
+        cleaned = cleaned.replace('\r\n', '\n')
+        
+        # 移除 trailing commas（JSON 不允许）
+        cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
+        
+        return cleaned
 
-    def _ensure_structure(self, data: dict, resume_text: str, jd_text: str) -> dict:
+    def _get_match_level(self, status):
+        """根据 match_status 获取 match_level。"""
+        status = str(status).lower()
+        if "match" in status or "匹配" in status or "✅" in status:
+            return "high"
+        elif "partial" in status or "部分" in status or "⚠️" in status:
+            return "medium"
+        elif "gap" in status or "缺失" in status or "❌" in status:
+            return "low"
+        return "medium"
+    
+    def _get_gap_risk(self, status):
+        """根据 match_status 获取 gap_risk。"""
+        status = str(status).lower()
+        if "gap" in status or "缺失" in status or "❌" in status:
+            return "high"
+        elif "partial" in status or "部分" in status or "⚠️" in status:
+            return "medium"
+        return "low"
+    
+    def _extract_category_name(self, category_key: str) -> str:
+        """从字段名提取类别中文名称。"""
+        category_map = {
+            "industry_specific": "行业特性",
+            "role_specialized": "岗位专项",
+            "role_specialized_F": "全栈专项",
+            "technical_fundamentals": "技术基础",
+            "technical_fundamentals_F": "技术基础",
+            "motivation_based": "动机问题",
+            "behavioral": "行为面试",
+            "project_deep_dive": "项目深挖",
+            "system_design": "系统设计",
+            "ai_knowledge": "AI知识",
+            "rag": "RAG",
+            "llm": "LLM",
+        }
+        
+        # 尝试精确匹配
+        for key, name in category_map.items():
+            if key.lower() in category_key.lower():
+                return name
+        
+        # 如果是带方向后缀的（如 role_specialized_F_ai_fullstack）
+        if "_F_" in category_key:
+            return "全栈专项"
+        if "_E_" in category_key:
+            return "产品专项"
+        
+        # 默认返回处理后的字段名
+        return category_key.replace("_", " ").capitalize()
+
+    def _format_requirement_matching(self, items):
+        """格式化 requirement_matching 字段，补充缺失的字段。"""
+        formatted = []
+        for item in items:
+            if isinstance(item, dict):
+                formatted.append({
+                    "requirement": item.get("requirement", item.get("requirement_text", "")),
+                    "resume_evidence": item.get("resume_evidence", item.get("evidence", "-")),
+                    "match_status": item.get("match_status", item.get("status", "")),
+                    "analysis": item.get("analysis", item.get("comment", "")),
+                    "match_level": item.get("match_level", self._get_match_level(item.get("match_status", ""))),
+                    "gap_risk": item.get("gap_risk", self._get_gap_risk(item.get("match_status", ""))),
+                    "strategy": item.get("strategy", "")
+                })
+        return formatted
+
+    def _ensure_structure(self, data: dict, resume_text: str = "", jd_text: str = "") -> dict:
         """确保输出包含完整结构，缺失部分填默认值。"""
+        
+        # 处理嵌套结构：如果数据在 interview_prep_doc 中，提取出来
+        if "interview_prep_doc" in data and isinstance(data["interview_prep_doc"], dict):
+            inner_data = data.pop("interview_prep_doc")
+            data.update(inner_data)
+        
+        # 字段名映射：处理 LLM 可能返回的不同字段名
+        field_mappings = {
+            "chapter_2_jd_analysis": "jd_analysis",
+            "jd_analysis": "jd_analysis",
+            "jd_match_analysis": "jd_analysis",
+            "jd_matching_analysis": "jd_analysis",
+            "jd_interpretation": "jd_analysis",
+            "section_2_jd_analysis": "jd_analysis",
+            "chapter_5_high_frequency_questions": "predicted_questions",
+            "predicted_questions": "predicted_questions",
+            "high_frequency_questions": "predicted_questions",
+            "section_5_high_frequency_questions": "predicted_questions",
+            "chapter_3_self_introduction": "self_intro",
+            "self_intro": "self_intro",
+            "self_introduction": "self_intro",
+            "section_3_self_introduction": "self_intro",
+            "appendix_gap_list": "gap_analysis",
+            "gap_analysis": "gap_analysis",
+            "gap_list": "gap_analysis",
+            "section_6_gap_analysis": "gap_analysis",
+            "chapter_1_company_research": "company_research",
+            "company_research": "company_research",
+            "company_overview": "company_research",
+            "section_1_company_research": "company_research",
+            "section_4_project_deep_dive": "star_stories",
+            "project_deep_dive": "star_stories",
+            "section_7_coaching_tips": "coaching_tips",
+            "section_7_ask_back_questions": "ask_back_questions",
+            "section_8_ask_back_questions": "ask_back_questions",
+        }
+        
+        # 重命名字段
+        for old_key, new_key in field_mappings.items():
+            if old_key in data and old_key != new_key:
+                data[new_key] = data.pop(old_key)
+        
+        # 补充 company_research 中缺失的字段
+        if "company_research" in data and isinstance(data["company_research"], dict):
+            company_defaults = {
+                "overview": "未搜索到公司信息，建议补充",
+                "product_features": "",
+                "competitors": "",
+                "ai_strategy": "",
+                "recent_news": "",
+                "culture_signals": "",
+                "sources": []
+            }
+            for key, default in company_defaults.items():
+                if key not in data["company_research"]:
+                    data["company_research"][key] = default
+        
         defaults = {
             "company_research": {"overview": "未搜索到公司信息，建议补充",
                                  "product_features": "", "competitors": "",
@@ -739,6 +840,208 @@ JSON格式返回：
             "coaching_tips": [],
             "ask_back_questions": [],
         }
+        
+        # 处理 jd_analysis 字段格式转换
+        if "jd_analysis" in data:
+            jd_data = data["jd_analysis"]
+            if isinstance(jd_data, list):
+                data["jd_analysis"] = {
+                    "core_intent": "JD分析完成",
+                    "plain_language": [],
+                    "requirement_matching": jd_data
+                }
+            elif isinstance(jd_data, dict):
+                # 处理带编号的字段名（如 2.1_core_intent）
+                core_intent = jd_data.get("core_intent", "")
+                plain_language = []
+                requirement_matching = []
+                
+                for key, value in jd_data.items():
+                    if "core_intent" in key.lower() or "核心意图" in key:
+                        core_intent = str(value) if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                    elif "responsibility" in key.lower() or "职责" in key or "interpretation" in key.lower():
+                        if isinstance(value, list):
+                            plain_language.extend(value)
+                        else:
+                            plain_language.append(str(value))
+                    elif "matching" in key.lower() or "匹配" in key:
+                        if isinstance(value, list):
+                            requirement_matching = self._format_requirement_matching(value)
+                    elif "requirements" in key.lower():
+                        requirement_matching = self._format_requirement_matching(value)
+                
+                # 转换 plain_language 格式
+                formatted_plain_language = []
+                for item in plain_language:
+                    if isinstance(item, dict):
+                        formatted_plain_language.append({
+                            "original": item.get("requirement", item.get("original", "")),
+                            "plain": item.get("interpretation", item.get("plain", ""))
+                        })
+                    elif isinstance(item, str):
+                        formatted_plain_language.append({
+                            "original": item,
+                            "plain": item
+                        })
+                
+                data["jd_analysis"] = {
+                    "core_intent": core_intent if core_intent else "JD分析完成",
+                    "plain_language": formatted_plain_language,
+                    "requirement_matching": requirement_matching
+                }
+        
+        # 统一格式化 requirement_matching
+        if "jd_analysis" in data and "requirement_matching" in data["jd_analysis"]:
+            data["jd_analysis"]["requirement_matching"] = self._format_requirement_matching(
+                data["jd_analysis"]["requirement_matching"]
+            )
+        
+        # 处理 self_intro 字段格式转换
+        if "self_intro" in data and isinstance(data["self_intro"], dict):
+            data["self_intro"] = data["self_intro"].get("content", "")
+        
+        # 处理 predicted_questions 字段格式转换
+        if "predicted_questions" in data:
+            questions = data["predicted_questions"]
+            formatted_questions = []
+            
+            if isinstance(questions, dict):
+                # 处理字典格式（如 {industry_specific: [...], role_specialized: [...]}）
+                for category, items in questions.items():
+                    if isinstance(items, list):
+                        category_name = self._extract_category_name(category)
+                        for q in items:
+                            if isinstance(q, str):
+                                formatted_questions.append({
+                                    "question": q,
+                                    "category": category_name,
+                                    "source": "JD推导",
+                                    "key_points": []
+                                })
+                            elif isinstance(q, dict):
+                                formatted_questions.append({
+                                    "question": q.get("question", q.get("text", "")),
+                                    "category": category_name,
+                                    "source": "JD推导",
+                                    "key_points": q.get("key_points", []) if isinstance(q.get("key_points"), list) else []
+                                })
+            elif isinstance(questions, dict) and "questions" in questions:
+                questions = questions["questions"]
+            
+            if isinstance(questions, list):
+                for q in questions:
+                    if isinstance(q, dict):
+                        formatted_questions.append({
+                            "question": q.get("question", q.get("text", "")),
+                            "category": q.get("category", q.get("source_type", "综合")),
+                            "source": "JD推导",
+                            "key_points": q.get("key_points", []) if isinstance(q.get("key_points"), list) else []
+                        })
+                    elif isinstance(q, str):
+                        formatted_questions.append({
+                            "question": q,
+                            "category": "综合",
+                            "source": "JD推导",
+                            "key_points": []
+                        })
+            data["predicted_questions"] = formatted_questions
+        
+        # 处理 ask_back_questions 字段格式转换
+        if "ask_back_questions" in data:
+            ask_back = data["ask_back_questions"]
+            formatted_ask_back = []
+            
+            if isinstance(ask_back, dict):
+                # 处理字典格式（如 section_7_ask_back_questions 的内容）
+                for key, value in ask_back.items():
+                    if isinstance(value, list):
+                        for item in value:
+                            if isinstance(item, str):
+                                formatted_ask_back.append(item)
+                            elif isinstance(item, dict):
+                                formatted_ask_back.append(item.get("question", item.get("text", "")))
+                    elif isinstance(value, str):
+                        formatted_ask_back.append(value)
+            elif isinstance(ask_back, list):
+                for item in ask_back:
+                    if isinstance(item, str):
+                        formatted_ask_back.append(item)
+                    elif isinstance(item, dict):
+                        formatted_ask_back.append(item.get("question", item.get("text", "")))
+            
+            data["ask_back_questions"] = formatted_ask_back
+        
+        # 处理 star_stories 字段格式转换
+        if "star_stories" in data:
+            stories = data["star_stories"]
+            formatted_stories = []
+            
+            if isinstance(stories, dict):
+                # 处理字典格式（如 project_1, project_2 等）
+                for key, value in stories.items():
+                    if isinstance(value, dict):
+                        # 从 key 或 value 中提取项目名称
+                        project_name = value.get("project_name", value.get("name", ""))
+                        if not project_name:
+                            # 从 situation 中提取简短描述作为项目名
+                            situation = value.get("situation", "")
+                            project_name = situation[:30] + "..." if len(situation) > 30 else situation
+                        
+                        formatted_stories.append({
+                            "project_name": project_name,
+                            "situation": value.get("situation", value.get("Situation", "")),
+                            "task": value.get("task", value.get("Task", "")),
+                            "action": value.get("action", value.get("Action", "")),
+                            "result": value.get("result", value.get("Result", "")),
+                            "follow_up_questions": value.get("follow_up_questions", value.get("follow_up", []))
+                        })
+            elif isinstance(stories, list):
+                for idx, story in enumerate(stories):
+                    if isinstance(story, dict):
+                        # 从 story 中提取项目名称
+                        project_name = story.get("project_name", story.get("name", ""))
+                        if not project_name:
+                            # 从 situation 中提取简短描述作为项目名
+                            situation = story.get("situation", "")
+                            project_name = situation[:30] + "..." if len(situation) > 30 else situation
+                        
+                        formatted_stories.append({
+                            "project_name": project_name,
+                            "situation": story.get("situation", story.get("Situation", "")),
+                            "task": story.get("task", story.get("Task", "")),
+                            "action": story.get("action", story.get("Action", "")),
+                            "result": story.get("result", story.get("Result", "")),
+                            "follow_up_questions": story.get("follow_up_questions", story.get("follow_up", []))
+                        })
+            
+            data["star_stories"] = formatted_stories
+        
+        # 处理 gap_analysis 字段格式转换
+        if "gap_analysis" in data:
+            gaps = data["gap_analysis"]
+            if isinstance(gaps, list):
+                priority_1 = []
+                priority_2 = []
+                priority_3 = []
+                for gap in gaps:
+                    if isinstance(gap, dict):
+                        priority = gap.get("priority", 2)
+                        item = {
+                            "gap": gap.get("gap", gap.get("issue", "")),
+                            "action": gap.get("action", gap.get("suggestion", ""))
+                        }
+                        if priority == 1:
+                            priority_1.append(item)
+                        elif priority == 3:
+                            priority_3.append(item)
+                        else:
+                            priority_2.append(item)
+                data["gap_analysis"] = {
+                    "priority_1_must_fix": priority_1,
+                    "priority_2_should_fix": priority_2,
+                    "priority_3_nice_to_have": priority_3
+                }
+        
         for key, default in defaults.items():
             if key not in data or not data[key]:
                 data[key] = default

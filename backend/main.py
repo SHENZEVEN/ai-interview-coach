@@ -11,10 +11,12 @@
 import asyncio
 import json
 import os
+import uuid
+import datetime
 from typing import AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
@@ -22,7 +24,7 @@ from sse_starlette.sse import EventSourceResponse
 from agent.interview_agent import InterviewAgent
 from agent.cognitive_diagnosis import CognitiveModel
 from agent.tools import set_vector_store
-from agent.prep_agent import PrepAgent
+from agent.prep_agent import PrepAgent, ROLE_DIRECTIONS
 from models.schemas import (
     StartInterviewRequest,
     StartInterviewResponse,
@@ -55,6 +57,7 @@ app = FastAPI(
     title="AI Interview Agent",
     description="基于 LangChain + RAG 的认知诊断式面试 Agent",
     version="2.0.0",
+    default_response_class=JSONResponse,
 )
 
 app.add_middleware(
@@ -64,6 +67,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── 修复 UTF-8 编码问题 ──
+from fastapi.responses import JSONResponse
+import json
+
+class UTF8JSONResponse(JSONResponse):
+    def render(self, content: any) -> bytes:
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+app.default_response_class = UTF8JSONResponse
 
 # ── 全局状态 ──
 _interview_agent: InterviewAgent | None = None
@@ -164,6 +183,16 @@ async def get_diagnosis(session_id: str):
         return agent.get_diagnosis(session_id)
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
+
+
+@app.post("/api/agent/keep-alive")
+async def keep_alive(session_id: str = Body(..., embed=True)):
+    """会话保活：定期调用以保持会话不被超时清理。"""
+    agent = get_agent()
+    if agent.is_session_active(session_id):
+        return {"success": True, "message": "会话保持活跃"}
+    else:
+        raise HTTPException(404, detail="会话不存在或已过期")
 
 
 @app.get("/api/agent/stream-interview")
@@ -361,6 +390,176 @@ async def generate_prep(req: PrepGenerateRequest):
         raise HTTPException(500, detail=str(e))
 
 
+@app.post("/api/prep/stream-generate")
+async def stream_generate_prep(req: PrepGenerateRequest):
+    """SSE 流式生成面试准备文档。
+
+    边生成边返回，用户可以看到生成进度。
+    返回的事件类型：
+    - status: 当前生成阶段
+    - content: 生成的文本片段
+    - done: 生成完成
+    - error: 错误信息
+    """
+    agent = get_prep_agent()
+
+    async def event_generator() -> AsyncGenerator[dict, None]:
+        try:
+            # 阶段 1：开始分析
+            yield {"event": "status", "data": json.dumps({"status": "正在分析简历结构..."}, ensure_ascii=False)}
+            await asyncio.sleep(0.1)
+
+            yield {"event": "status", "data": json.dumps({"status": "正在解读岗位 JD..."}, ensure_ascii=False)}
+            await asyncio.sleep(0.1)
+
+            # 调用 agent 生成（支持流式输出）
+            yield {"event": "status", "data": json.dumps({"status": "AI 正在生成面试准备内容，请稍候..."}, ensure_ascii=False)}
+
+            # 收集生成的内容
+            full_content = ""
+            
+            def fix_encoding(s: str) -> str:
+                """修复可能的编码问题"""
+                try:
+                    # 尝试1: 直接返回
+                    return s
+                except:
+                    pass
+                try:
+                    # 尝试2: 假设 UTF-8 被错误解码为 GBK
+                    return s.encode('gbk', errors='ignore').decode('utf-8', errors='replace')
+                except:
+                    pass
+                try:
+                    # 尝试3: 使用 latin-1 作为中间编码
+                    return s.encode('latin-1').decode('utf-8', errors='replace')
+                except:
+                    # 最后返回原始字符串
+                    return s
+            
+            def sync_stream_callback(chunk: str):
+                """流式回调函数 - 同步版本"""
+                nonlocal full_content
+                # 修复编码后再收集
+                fixed_chunk = fix_encoding(chunk)
+                full_content += fixed_chunk
+                # 通过队列传递数据到异步生成器
+                queue.put_nowait(fixed_chunk)
+
+            # 创建队列用于同步回调和异步生成器之间的通信
+            queue = asyncio.Queue()
+            
+            # 启动流式生成任务（后台运行）
+            async def run_stream():
+                try:
+                    await asyncio.to_thread(
+                        agent.generate_stream,
+                        resume_text=req.resume_text,
+                        jd_text=req.jd_text,
+                        company_name=req.company_name,
+                        role_name=req.role_name,
+                        direction=req.direction,
+                        difficulty=req.difficulty,
+                        prep_mode=req.prep_mode,
+                        stream_callback=sync_stream_callback,
+                    )
+                    # 发送结束信号
+                    queue.put_nowait(None)
+                except Exception as e:
+                    queue.put_nowait(f"ERROR: {str(e)}")
+            
+            # 启动流式生成任务
+            asyncio.create_task(run_stream())
+            
+            # 接收流式数据并发送
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break  # 结束信号
+                if isinstance(chunk, str) and chunk.startswith("ERROR:"):
+                    yield {"event": "error", "data": json.dumps({"error": chunk[6:]}, ensure_ascii=False)}
+                    return
+                yield {"event": "content", "data": json.dumps({"content": chunk}, ensure_ascii=False)}
+                await asyncio.sleep(0.02)  # 控制发送速度
+            
+            # 处理最终内容
+            import re
+            # 移除 markdown 代码块标记
+            content = re.sub(r'```json\n?', '', full_content)
+            content = re.sub(r'\n?```', '', content)
+            
+            # 调试日志
+            print(f"[main.py] 原始内容长度: {len(content)}")
+            print(f"[main.py] 内容前100字符: {repr(content[:100])}")
+            
+            # 修复编码问题：处理可能的编码错误
+            # 尝试多种编码修复方案
+            prep_doc = None
+            encoding_tries = [
+                # 尝试1: 直接解析
+                lambda x: x,
+                # 尝试2: 假设 UTF-8 被错误解码为 GBK
+                lambda x: x.encode('gbk', errors='ignore').decode('utf-8', errors='replace'),
+                # 尝试3: 假设 UTF-8 被错误解码为 GB2312
+                lambda x: x.encode('gb2312', errors='ignore').decode('utf-8', errors='replace'),
+                # 尝试4: 使用 latin-1 作为中间编码
+                lambda x: x.encode('latin-1').decode('utf-8', errors='replace'),
+            ]
+            
+            for i, fix_func in enumerate(encoding_tries):
+                try:
+                    fixed_content = fix_func(content)
+                    prep_doc = json.loads(fixed_content)
+                    print(f"[main.py] 编码修复成功，使用方案 {i+1}")
+                    content = fixed_content
+                    break
+                except (json.JSONDecodeError, UnicodeEncodeError, UnicodeDecodeError):
+                    continue
+            
+            if prep_doc is None:
+                print(f"[main.py] 所有编码修复方案都失败，使用原始内容")
+                try:
+                    prep_doc = json.loads(content)
+                except:
+                    yield {"event": "error", "data": json.dumps({"error": "无法解析生成的文档"}, ensure_ascii=False)}
+                    return
+            
+            # 强制覆盖 meta 字段为前端期望的格式
+            prep_id = uuid.uuid4().hex[:12]
+            prep_doc['meta'] = {
+                'prep_id': prep_id,
+                'company_name': req.company_name,
+                'role_name': req.role_name,
+                'direction': req.direction,
+                'direction_label': ROLE_DIRECTIONS.get(req.direction, '其他'),
+                'difficulty': req.difficulty,
+                'prep_mode': req.prep_mode,
+                'generated_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'has_web_search': False,
+                'source_count': 0
+            }
+            
+            # 重新序列化
+            content = json.dumps(prep_doc, ensure_ascii=False)
+            print(f"[main.py] 成功添加 meta 字段, prep_id={prep_id}")
+            
+            # 发送完成信号
+            yield {"event": "status", "data": json.dumps({"status": "面试准备文档生成完成！"}, ensure_ascii=False)}
+            
+            # 发送 done 事件，包含完整内容
+            try:
+                done_data = json.dumps({"content": content}, ensure_ascii=False)
+                yield {"event": "done", "data": done_data}
+            except Exception as e:
+                # 如果 JSON 序列化失败，尝试发送原始内容
+                yield {"event": "error", "data": json.dumps({"error": f"序列化失败: {str(e)}"}, ensure_ascii=False)}
+
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"error": str(e)}, ensure_ascii=False)}
+
+    return EventSourceResponse(event_generator())
+
+
 @app.get(
     "/api/prep/{prep_id}",
     response_model=PrepDocument,
@@ -384,13 +583,34 @@ async def refine_prep(req: PrepRefineRequest):
     """闭环：用认知诊断结果反向更新面试准备。
 
     诊断暴露的问题 → 更新 Gap 清单 + 生成针对性新题 + 优化自我介绍。
+
+    支持两种模式：
+    1. 在线模式：传 session_id，从后端内存获取诊断
+    2. 离线模式：传 diagnosis_data + prep_data，完全绕过内存存储（用于已保存的诊断报告）
     """
     prep_agent = get_prep_agent()
-    interview_agent = get_agent()
+
+    # 获取诊断数据（优先使用传入的完整数据，其次 session_id，最后允许纯文本由 prep_agent 解析）
+    if req.diagnosis_data:
+        diagnosis_dict = req.diagnosis_data
+    elif req.session_id:
+        interview_agent = get_agent()
+        try:
+            diagnosis = interview_agent.get_diagnosis(req.session_id)
+            diagnosis_dict = diagnosis.model_dump() if hasattr(diagnosis, 'model_dump') else diagnosis
+        except ValueError as e:
+            raise HTTPException(400, detail=f"会话已过期: {e}")
+    elif req.diagnosis_text:
+        # 纯文本诊断 → 传空 dict，由 refine_with_diagnosis 内部调用 _parse_diagnosis_text 解析
+        diagnosis_dict = {}
+    else:
+        raise HTTPException(400, detail="请提供 session_id、diagnosis_data 或 diagnosis_text")
+
     try:
-        diagnosis = interview_agent.get_diagnosis(req.session_id)
-        diagnosis_dict = diagnosis.model_dump() if hasattr(diagnosis, 'model_dump') else diagnosis
-        return prep_agent.refine_with_diagnosis(req.prep_id, diagnosis_dict)
+        return prep_agent.refine_with_diagnosis(
+            req.prep_id, diagnosis_dict, req.prep_data,
+            prep_text=req.prep_text, diagnosis_text=req.diagnosis_text,
+        )
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
     except Exception as e:
@@ -413,23 +633,56 @@ async def start_from_prep(req: StartFromPrepRequest):
     prep_agent = get_prep_agent()
     interview_agent = get_agent()
 
-    try:
-        prep = prep_agent.get_prep(req.prep_id)
-    except ValueError as e:
-        raise HTTPException(400, detail=str(e))
+    # 优先使用前端传入的 prep_data（绕过内存存储，解决重启丢失问题）
+    if req.prep_data:
+        prep = req.prep_data
+    elif req.prep_id:
+        try:
+            prep = prep_agent.get_prep(req.prep_id)
+        except ValueError as e:
+            raise HTTPException(400, detail=str(e))
+    else:
+        raise HTTPException(400, detail="请提供 prep_id 或 prep_data")
 
     # 提取 prep 上下文
     predicted_questions = prep.get("predicted_questions", [])
     gap_analysis = prep.get("gap_analysis", {})
-    focus_areas = prep.get("focus_areas", [])
     jd_analysis = prep.get("jd_analysis", {})
 
-    # 将 P1 gap 转为 focus areas
-    p1_gaps = gap_analysis.get("priority_1_must_fix", [])
-    gap_focus = [g.get("gap", "") for g in p1_gaps[:3]]
+    # 从 gap_analysis 中提取弱点作为 focus areas
+    # gap_analysis 格式: {"priority_1_must_fix": [...], "priority_2_should_fix": [...], ...}
+    # 每个 item 是 {"gap": "...", "action": "...", "time_estimate": "..."}
+    # 也兼容旧格式: {"weaknesses": [...], "mitigation_strategies": [...]}
+    weaknesses = gap_analysis.get("weaknesses", [])
+    if not weaknesses:
+        # 从 priority_1_must_fix 和 priority_2_should_fix 中提取
+        p1_items = gap_analysis.get("priority_1_must_fix", [])
+        p2_items = gap_analysis.get("priority_2_should_fix", [])
+        for item in p1_items + p2_items:
+            if isinstance(item, dict):
+                gap_text = item.get("gap", "") or item.get("action", "")
+                if gap_text:
+                    weaknesses.append(gap_text)
+            elif isinstance(item, str):
+                weaknesses.append(item)
 
-    # 构建增强版 focus areas
-    all_focus = list(set(focus_areas + gap_focus))[:5]
+    mitigation_strategies = gap_analysis.get("mitigation_strategies", [])
+    if not mitigation_strategies:
+        # 从 priority items 的 action 中提取
+        p1_items = gap_analysis.get("priority_1_must_fix", [])
+        for item in p1_items:
+            if isinstance(item, dict) and item.get("action"):
+                mitigation_strategies.append(item["action"])
+
+    all_focus = weaknesses[:3] + [s for s in mitigation_strategies if s][:2]
+
+    # 提取 JD 核心意图（兼容两种字段名）
+    jd_intent = ""
+    if isinstance(jd_analysis, dict):
+        jd_intent = jd_analysis.get("core_intent", "") or jd_analysis.get("core_requirements", "")
+        if isinstance(jd_intent, list):
+            jd_intent = jd_intent[0] if jd_intent else ""
+        jd_intent = str(jd_intent) if jd_intent else ""
 
     # 启动面试（传入 prep 上下文）
     response = interview_agent.start_interview_with_prep(
@@ -439,8 +692,8 @@ async def start_from_prep(req: StartFromPrepRequest):
         prep_context={
             "predicted_questions": predicted_questions[:8],
             "focus_areas": all_focus,
-            "jd_intent": jd_analysis.get("core_intent", ""),
-            "gap_areas": gap_focus,
+            "jd_intent": jd_intent,
+            "gap_areas": weaknesses[:3],
         },
     )
 
@@ -473,8 +726,7 @@ async def start_from_external_doc(req: StartFromExternalDocRequest):
         raise HTTPException(400, detail="外部文档内容不能为空")
     if len(req.external_doc_text) > 50000:
         raise HTTPException(400, detail="文档过长，请控制在50000字以内")
-    if not req.resume_text.strip():
-        raise HTTPException(400, detail="简历内容不能为空")
+    # 简历可选：文档已包含完整预测题库，简历仅用于提升题目匹配精准度
 
     try:
         result = interview_agent.start_from_external_doc(

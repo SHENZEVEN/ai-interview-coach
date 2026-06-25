@@ -228,13 +228,16 @@ class PrepDocument(BaseModel):
 
 class PrepRefineRequest(BaseModel):
     prep_id: str = Field(..., description="面试准备文档ID")
-    session_id: str = Field(..., description="面试会话ID（用于获取诊断结果）")
-
-
+    session_id: str = Field("", description="面试会话ID（用于获取诊断结果）")
+    prep_data: Optional[dict] = Field(None, description="完整 prep 文档数据（绕过内存存储）")
+    diagnosis_data: Optional[dict] = Field(None, description="完整诊断数据（绕过内存存储，用于已保存的诊断报告）")
+    prep_text: Optional[str] = Field(None, description="原始准备文档文本（.md/.docx 导入时使用，与 prep_data 二选一，后端 LLM 解析为结构化数据）")
+    diagnosis_text: Optional[str] = Field(None, description="原始诊断报告文本（.md/.docx 导入时使用，与 diagnosis_data 二选一，后端 LLM 解析为结构化数据）")
 class StartFromPrepRequest(BaseModel):
-    prep_id: str = Field(..., description="面试准备文档ID")
+    prep_id: str = Field("", description="面试准备文档ID（prep_data 提供时可为空）")
     resume_text: str = Field("", description="简历文本（覆盖prep中的）")
     difficulty: Optional[str] = Field(None, description="覆盖难度")
+    prep_data: Optional[dict] = Field(None, description="完整的面试准备文档数据（从前端 localStorage 传入，绕过内存存储）")
 
 
 class StartFromPrepResponse(BaseModel):
@@ -247,7 +250,7 @@ class StartFromPrepResponse(BaseModel):
 # ── 外部文档导入（Skill MD → 准备驱动面试）──
 
 class StartFromExternalDocRequest(BaseModel):
-    resume_text: str = Field(..., description="简历全文")
+    resume_text: str = Field("", description="简历全文（可选，文档已包含完整题库）")
     external_doc_text: str = Field(..., description="外部面试准备文档全文（如 interview-prep skill 的 .md 输出）")
     difficulty: str = Field("mid", description="面试难度")
     direction: str = Field("E", description="岗位方向: A-G")

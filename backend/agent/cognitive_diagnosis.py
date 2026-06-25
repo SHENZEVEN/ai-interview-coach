@@ -22,10 +22,11 @@ class KnowledgeArea:
 
     @property
     def coverage(self) -> float:
-        """该领域回答覆盖率 0-1。"""
+        """该领域回答覆盖率 0-1（连续值，每个题目贡献 score/100）。"""
         if self.total_hits == 0:
             return 0.0
-        return self.covered_well / self.total_hits
+        # covered_well 存储的是 Σ(score/100)，除以 total_hits 得到平均覆盖率
+        return min(1.0, self.covered_well / self.total_hits)
 
     @property
     def depth_score(self) -> float:
@@ -78,8 +79,9 @@ class CognitiveModel:
         area = self.get_or_create_area(question_category)
         area.total_hits += 1
         area.scores.append(score)
-        if score >= 60:
-            area.covered_well += 1
+        # 使用连续分数而非二值阈值：score / 100 作为覆盖度贡献
+        # 这样每个题目贡献 [0, 1] 的覆盖度，多次累加后取平均
+        area.covered_well += score / 100.0  # score 是 0-100
         area.keywords_mentioned.update(keywords)
         area.missing_concepts.update(knowledge_gaps)
 
@@ -90,9 +92,9 @@ class CognitiveModel:
             "question_id": question_id,
             "question_short": question_text[:50] + "...",
             "category": question_category,
-            "score": score,
-            "logic_score": logic_score,
-            "communication_score": communication_score,
+            "score": round(score, 1),
+            "logic_score": round(logic_score, 1),
+            "communication_score": round(communication_score, 1),
         })
 
     def generate_diagnosis(self, strengths: list[str], weaknesses: list[str], improvement_plan: list[str]) -> dict:

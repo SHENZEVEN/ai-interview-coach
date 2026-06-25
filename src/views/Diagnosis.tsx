@@ -148,10 +148,15 @@ export const Timeline = ({ data }: { data: TimelinePoint[] }) => {
   const getX = (i: number) => pad.left + (data.length > 1 ? i * xStep : chartW / 2);
   const getY = (val: number) => pad.top + chartH - (val / maxVal) * chartH;
 
-  // 生成路径
+  // 生成路径（score 是 0-100，logic/comm 是 0-10，需要统一到 0-100 范围）
+  const getScaledValue = (p: TimelinePoint, key: 'score' | 'logic_score' | 'communication_score') => {
+    const val = p[key];
+    // score 字段已为 0-100，logic_score 和 communication_score 为 0-10
+    return key === 'score' ? val : val * 10;
+  };
   const makePath = (key: 'score' | 'logic_score' | 'communication_score') =>
     data
-      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${getX(i)} ${getY(p[key] * 10)}`)
+      .map((p, i) => `${i === 0 ? 'M' : 'L'} ${getX(i)} ${getY(getScaledValue(p, key))}`)
       .join(' ');
 
   return (
@@ -170,7 +175,7 @@ export const Timeline = ({ data }: { data: TimelinePoint[] }) => {
       {/* 数据点 */}
       {data.map((p, i) => (
         <g key={p.question_id}>
-          <circle cx={getX(i)} cy={getY(p.score * 10)} r="4" fill={CYAN} />
+          <circle cx={getX(i)} cy={getY(p.score)} r="4" fill={CYAN} />
           <text x={getX(i)} y={h - 8} textAnchor="middle" fill="#888" fontSize="7" fontFamily="monospace">
             Q{i + 1}
           </text>
