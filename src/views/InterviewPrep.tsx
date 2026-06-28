@@ -3,7 +3,6 @@ import { useNavigate, useLocation } from 'react-router';
 import {
   generatePrepStream,
   refinePrep,
-  startFromPrep,
   getPrep,
   PrepDocument,
   ROLE_DIRECTIONS,
@@ -16,18 +15,8 @@ import { parseDocument } from '../utils/documentParser';
 import { saveHistoryRecord } from '../utils/storage';
 import { v4 as uuidv4 } from 'uuid';
 import { API_BASE } from '../services/aiService';
+import { CYAN, MAGENTA, GREEN, YELLOW, RED, DIM, BG, CARD, BORDER } from '../theme/colors';
 import ResumeMatcher from './ResumeMatcher';
-
-// ── 颜色常量 ──
-const CYAN = '#00f0ff';
-const MAGENTA = '#ff00ff';
-const GREEN = '#22ff22';
-const YELLOW = '#ffff00';
-const RED = '#ff4444';
-const DIM = '#555';
-const BG = '#0a0a0a';
-const CARD = '#111';
-const BORDER = '#222';
 
 // ── 文件导入拖拽区（独立组件，避免渲染内嵌套 hooks）──
 function FileDropZone({ label, accept, onFile, isImported, hint }: {
@@ -94,26 +83,31 @@ const InterviewPrep = () => {
   const location = useLocation();
   const navState = location.state as { prepId?: string; sessionId?: string; diagnosisCompleted?: boolean; diagnosisData?: any } | null;
 
-  // ── 处理从面试拷打返回的闭环 ──
+  // ── 处理从诊断报告页跳转的闭环 ──
   useEffect(() => {
-    if (navState?.prepId && navState?.diagnosisCompleted) {
-      setSessionId(navState.sessionId || null);
-      setSavedDiagnosisData(navState.diagnosisData || null);
-      setPageMode('prep'); // 强制切换到完整准备模式，显示闭环 UI
-      // 优先从 localStorage 恢复 prep（后端可能已重启）
-      const savedPreps = getSavedPreps();
-      const localPrep = savedPreps.find(p => p.meta.prep_id === navState.prepId);
-      if (localPrep) {
-        setPrep(localPrep as any);
-        setStage('preview');
+    if (navState?.diagnosisCompleted && navState?.diagnosisData) {
+      setSavedDiagnosisData(navState.diagnosisData);
+      setImportedDiagnosisSource('saved');
+      setPageMode('prep');
+      if (navState.prepId) {
+        const savedPreps = getSavedPreps();
+        const localPrep = savedPreps.find(p => p.meta.prep_id === navState.prepId);
+        if (localPrep) {
+          setPrep(localPrep as any);
+          setImportedPrepSource('saved');
+          setStage('input'); // 停在 input，让闭环面板显示
+        } else {
+          getPrep(navState.prepId).then(p => {
+            setPrep(p);
+            setImportedPrepSource('saved');
+            setStage('input');
+          }).catch(() => {
+            setError('面试准备文档未找到，请从闭环面板选择或导入文档');
+            setStage('input');
+          });
+        }
       } else {
-        // 尝试从后端获取
-        getPrep(navState.prepId).then(p => {
-          setPrep(p);
-          setStage('preview');
-        }).catch(() => {
-          setError('面试准备文档已过期（后端重启），请从本地保存的文档重新加载');
-        });
+        setStage('input');
       }
       window.history.replaceState({}, document.title);
     }
@@ -172,23 +166,13 @@ const InterviewPrep = () => {
   // ── 流式生成状态 ──
   const [streamStatus, setStreamStatus] = useState('');
   const [streamContent, setStreamContent] = useState('');
-  const [generatingElapsed, setGeneratingElapsed] = useState(0);
-
-  // ── 生成计时器 ──
-  useEffect(() => {
-    if (stage !== 'generating') { setGeneratingElapsed(0); return; }
-    const start = Date.now();
-    const timer = setInterval(() => setGeneratingElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, [stage]);
+  const [streamProgress, setStreamProgress] = useState(5);
 
   // ── 结果状态 ──
   const [prep, setPrep] = useState<PrepDocument | null>(null);
   const [expandedSection, setExpandedSection] = useState<Set<string>>(new Set(['jd', 'questions', 'gap', 'askback']));
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [savedDiagnosisData, setSavedDiagnosisData] = useState<any>(null); // 从已保存诊断报告携带的诊断数据
-  const [showDiagnosisImport, setShowDiagnosisImport] = useState(false); // 显示诊断报告导入面板
-  const [savedDiagnoses, setSavedDiagnoses] = useState<SavedDiagnosis[]>([]);
   const [isStartingInterview, setIsStartingInterview] = useState(false);
 
   // ── 外部文件导入（闭环优化面板）──
@@ -240,7 +224,18 @@ const InterviewPrep = () => {
           return;
         }
         // 确保有基本 meta
-        if (!data.meta) data.meta = {};
+        if (!data.meta) data.meta = {
+          prep_id: `ext-${Date.now()}`,
+          company_name: file.name.replace(/\.json$/i, ''),
+          role_name: '导入文档',
+          direction: 'E',
+          direction_label: 'AI产品',
+          difficulty: 'mid',
+          prep_mode: 'standard',
+          generated_at: new Date().toISOString(),
+          has_web_search: false,
+          source_count: 0,
+        };
         if (!data.meta.prep_id) data.meta.prep_id = `ext-${Date.now()}`;
         if (!data.meta.company_name) data.meta.company_name = file.name.replace(/\.json$/i, '');
         setPrep(data as PrepDocument);
@@ -360,6 +355,7 @@ const InterviewPrep = () => {
     setStreamStatus('🚀 正在连接服务器...');
     setStreamContent('');
     setStage('generating');
+    setImportedPrepSource(null);
 
     // 保存当前状态到 localStorage，以便页面刷新后恢复
     localStorage.setItem('interview-prep-state', JSON.stringify({
@@ -388,6 +384,9 @@ const InterviewPrep = () => {
       }, (progress) => {
         setStreamStatus(progress.status);
         setStreamContent(progress.content);
+        if (progress.progress !== undefined && progress.progress > 0) {
+          setStreamProgress(progress.progress);
+        }
         // 实时更新保存的状态
         const savedState = JSON.parse(localStorage.getItem('interview-prep-state') || '{}');
         localStorage.setItem('interview-prep-state', JSON.stringify({
@@ -409,34 +408,30 @@ const InterviewPrep = () => {
     }
   };
 
-  // ── 开始面试拷打 ──
+  // ── 开始面试拷打（进入准备驱动模式）──
   const handleStartInterview = async () => {
     if (!prep || !prep.meta?.prep_id) {
       setError('面试准备文档无效');
       return;
     }
-    // 自动保存到 localStorage，确保闭环回来时文档还在
     try { savePrep(prep); } catch {}
     setIsStartingInterview(true);
     setError(null);
     try {
-      const result = await startFromPrep({
-        prep_id: prep.meta.prep_id,
-        resume_text: resumeText,
-        prep_data: prep as any,
-      });
-      setSessionId(result.session_id);
-      // 导航到简历拷打页面，携带 prep 上下文
+      // 保存准备文档数据到 localStorage，供 ResumeRoast 使用
+      localStorage.setItem('prep-document-for-roast', JSON.stringify({
+        prepId: prep.meta.prep_id,
+        prepData: prep,
+        resumeText: resumeText,
+      }));
+      // 导航到简历拷打页面，进入准备驱动模式（不直接开始面试）
       navigate('/roast', {
         state: {
           prepId: prep.meta.prep_id,
-          sessionId: result.session_id,
-          firstQuestion: result.first_question,
-          prepContextUsed: result.prep_context_used,
           isPrepDriven: true,
+          mode: 'prep-select', // 进入准备驱动选择模式
         },
       });
-      // 导航成功后重置状态
       setIsStartingInterview(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : '启动面试失败');
@@ -444,27 +439,30 @@ const InterviewPrep = () => {
     }
   };
 
-  // ── 闭环：用诊断更新面试准备 ──
-  const handleRefine = async (diagSessionId: string) => {
+  // ── 闭环：用诊断更新面试准备（纯前端数据，不依赖后端 session）──
+  const handleRefine = async () => {
     if (!prep) return;
+    if (!savedDiagnosisData && !importedDiagnosisText) {
+      setError('请先选择或导入诊断报告');
+      return;
+    }
     setStage('refining');
     setError(null);
     try {
-      // 根据导入来源决定传参
-      const updated = await refinePrep({
+      const reqPayload: any = {
         prep_id: prep.meta.prep_id,
-        session_id: diagSessionId,
+        // 不传 session_id，直接用前端已有的完整数据
         prep_data: importedPrepSource === 'file' && importedPrepText ? undefined : (prep as any),
         prep_text: importedPrepSource === 'file' && importedPrepText ? importedPrepText : undefined,
-        diagnosis_data: importedDiagnosisSource === 'file' && importedDiagnosisText ? undefined : (savedDiagnosisData || undefined),
+        diagnosis_data: importedDiagnosisSource === 'file' && importedDiagnosisText ? undefined : savedDiagnosisData,
         diagnosis_text: importedDiagnosisSource === 'file' && importedDiagnosisText ? importedDiagnosisText : undefined,
-      });
+      };
+      const updated = await refinePrep(reqPayload);
       setPrep(updated);
-      // 自动保存更新后的文档
       try { savePrep(updated); } catch {}
+      // 清除闭环状态
       setSessionId(null);
       setSavedDiagnosisData(null);
-      // 清除导入状态
       setImportedPrepSource(null);
       setImportedPrepText(null);
       setImportedPrepFileName('');
@@ -474,7 +472,7 @@ const InterviewPrep = () => {
       setStage('preview');
     } catch (err) {
       setError(err instanceof Error ? err.message : '更新失败');
-      setStage('preview');
+      setStage('input');
     }
   };
 
@@ -580,14 +578,16 @@ const InterviewPrep = () => {
           对标 interview-prep skill — 生成个性化面试准备文档，再一键启动针对性面试拷打
         </p>
 
-        {/* ── 闭环优化 — 两个独立卡片：准备文档 + 诊断报告 ── */}
+        {/* ── 闭环优化 — 两个独立卡片：准备文档 + 诊断报告（始终显示）── */}
         {(() => {
           const sp = getSavedPreps();
           const allDiags = getDiagnoses().filter(d => d.isPrepDriven);
           // 配套判断仅对已保存文档生效，文件导入不限配套
           const matchingDiags = importedPrepSource === 'file'
             ? allDiags  // 外部导入文档 → 显示全部已保存诊断
-            : allDiags.filter(d => d.prepId === prep?.meta?.prep_id); // 已保存文档 → 只显示配套的
+            : importedPrepSource === 'saved' && prep?.meta?.prep_id
+              ? allDiags.filter(d => d.prepId === prep.meta.prep_id) // 已保存文档 → 只显示配套的
+              : allDiags; // 未选择来源 → 显示全部
 
           return (
             <div style={{ display: 'flex', gap: 16, marginBottom: 4, flexWrap: 'wrap' }}>
@@ -698,7 +698,7 @@ const InterviewPrep = () => {
                 )}
 
                 {/* 已保存诊断列表 */}
-                {importedPrepSource === 'saved' && matchingDiags.length > 0 && (
+                {matchingDiags.length > 0 && (
                   <div style={{ marginBottom: 8 }}>
                     <div style={{ fontSize: 10, color: DIM, marginBottom: 4 }}>
                       配套诊断（{matchingDiags.length} 份）
@@ -728,10 +728,10 @@ const InterviewPrep = () => {
                     </div>
                   </div>
                 )}
-                {importedPrepSource === 'file' && allDiags.length > 0 && (
+                {allDiags.length > 0 && matchingDiags.length === 0 && (
                   <div style={{ marginBottom: 8 }}>
                     <div style={{ fontSize: 10, color: DIM, marginBottom: 4 }}>
-                      全部已保存诊断（{allDiags.length} 份，外部文档不限配套）
+                      全部已保存诊断（{allDiags.length} 份）
                     </div>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       {allDiags.slice(0, 3).map(d => (
@@ -775,13 +775,13 @@ const InterviewPrep = () => {
         {/* ── 执行优化按钮（两个卡片都选中后）── */}
         {prep && savedDiagnosisData && (
           <button
-            onClick={() => handleRefine(sessionId || '')}
+            onClick={handleRefine}
             style={{
               width: '100%', padding: '12px 0', marginBottom: 4,
               background: `linear-gradient(135deg, ${MAGENTA}, ${MAGENTA}80)`,
               color: '#fff', border: 'none', borderRadius: 10,
               fontSize: 14, fontWeight: 700, cursor: 'pointer',
-              animation: 'pulse 2s ease-in-out infinite',
+              // no animation
             }}
           >
             🚀 执行闭环优化 — 更新 Gap 清单 + 生成针对性新题
@@ -913,19 +913,21 @@ const InterviewPrep = () => {
 
   // ── 生成中 ──
   if (stage === 'generating') {
-    // 估算百分比：根据 streamStatus 的阶段文字估算
+    // 优先使用后端传来的 progress，否则根据 streamStatus 的阶段文字估算
     const statusText = streamStatus || '正在连接服务器...';
-    let estimatedPct = 5;
-    if (statusText.includes('简历')) estimatedPct = 15;
-    else if (statusText.includes('公司') || statusText.includes('调研')) estimatedPct = 30;
-    else if (statusText.includes('JD') || statusText.includes('解读')) estimatedPct = 45;
-    else if (statusText.includes('介绍')) estimatedPct = 55;
-    else if (statusText.includes('项目')) estimatedPct = 65;
-    else if (statusText.includes('题目') || statusText.includes('预测')) estimatedPct = 75;
-    else if (statusText.includes('指导') || statusText.includes('建议')) estimatedPct = 85;
-    else if (statusText.includes('反问')) estimatedPct = 92;
-    else if (statusText.includes('Gap') || statusText.includes('清单')) estimatedPct = 97;
-    else if (statusText.includes('完成')) estimatedPct = 100;
+    let estimatedPct = streamProgress;
+    if (estimatedPct <= 5) {
+      if (statusText.includes('简历')) estimatedPct = 15;
+      else if (statusText.includes('公司') || statusText.includes('调研')) estimatedPct = 30;
+      else if (statusText.includes('JD') || statusText.includes('解读')) estimatedPct = 45;
+      else if (statusText.includes('介绍')) estimatedPct = 55;
+      else if (statusText.includes('项目')) estimatedPct = 65;
+      else if (statusText.includes('题目') || statusText.includes('预测')) estimatedPct = 75;
+      else if (statusText.includes('指导') || statusText.includes('建议')) estimatedPct = 85;
+      else if (statusText.includes('反问')) estimatedPct = 92;
+      else if (statusText.includes('Gap') || statusText.includes('清单')) estimatedPct = 97;
+      else if (statusText.includes('完成')) estimatedPct = 100;
+    }
     const blocks = 20;
     const filledBlocks = Math.floor(estimatedPct / (100 / blocks));
     const bar = '█'.repeat(filledBlocks) + '░'.repeat(blocks - filledBlocks);
@@ -988,11 +990,46 @@ const InterviewPrep = () => {
 
   return (
     <div style={{ maxWidth: 860, margin: '0 auto', padding: 24 }}>
+      {/* ── 闭环优化版标识（紧凑单行）── */}
+      {prep.meta.diagnosis_feedback && (
+        <div style={{
+          background: 'rgba(255,0,255,0.06)',
+          borderLeft: `3px solid ${MAGENTA}`,
+          borderRadius: 6, padding: '8px 14px', marginBottom: 12,
+          fontSize: 12, color: DIM, lineHeight: 1.6,
+        }}>
+          <span style={{ color: MAGENTA, fontWeight: 700 }}>🔄 闭环优化版</span>
+          <span style={{ margin: '0 8px', color: BORDER }}>|</span>
+          诊断评分 {prep.meta.diagnosis_feedback.overall_score}
+          <span style={{ margin: '0 8px', color: BORDER }}>|</span>
+          薄弱项 {prep.meta.diagnosis_feedback.weaknesses?.length || 0} 个
+          {prep.meta.diagnosis_feedback.weaknesses?.length > 0 && (
+            <span style={{ marginLeft: 6 }}>
+              ({prep.meta.diagnosis_feedback.weaknesses.slice(0, 3).join(', ')}{prep.meta.diagnosis_feedback.weaknesses.length > 3 ? '...' : ''})
+            </span>
+          )}
+          <span style={{ margin: '0 8px', color: BORDER }}>|</span>
+          {prep.meta.diagnosis_feedback.applied_at ? new Date(prep.meta.diagnosis_feedback.applied_at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '未知'}
+          {prep.meta.refined_from && (
+            <>
+              <span style={{ margin: '0 8px', color: BORDER }}>|</span>
+              源文档 {prep.meta.refined_from.slice(0, 12)}...
+            </>
+          )}
+          {prep.meta.refine_summary && (
+            <>
+              <br />
+              <span style={{ color: '#aaa', fontStyle: 'italic' }}>优化摘要：{prep.meta.refine_summary}</span>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
         <div>
           <h1 style={{ fontSize: 20, marginBottom: 4 }}>
-            📋 {prep.meta.role_name || '面试准备'} @ {prep.meta.company_name || '目标公司'}
+            {prep.meta.diagnosis_feedback ? '🔄' : '📋'} {prep.meta.role_name || '面试准备'} @ {prep.meta.company_name || '目标公司'}
           </h1>
           <p style={{ color: DIM, fontSize: 12 }}>
             {ROLE_DIRECTIONS[prep.meta.direction]} · {DIFFICULTY_OPTIONS.find(o => o.value === prep.meta.difficulty)?.label}
@@ -1006,68 +1043,9 @@ const InterviewPrep = () => {
             )}
             <span style={{ margin: '0 6px', color: BORDER }}>|</span>
             ID: {prep.meta.prep_id}
-            {prep.meta.diagnosis_feedback && (
-              <span style={{
-                color: MAGENTA, marginLeft: 8, padding: '2px 10px',
-                background: 'rgba(255,0,255,0.08)', borderRadius: 4,
-                border: `1px solid ${MAGENTA}60`, fontSize: 11,
-              }}>
-                🔄 面试反馈已闭环 · 诊断评分 {prep.meta.diagnosis_feedback.overall_score} · 薄弱项 {prep.meta.diagnosis_feedback.weaknesses?.length || 0} 个
-              </span>
-            )}
           </p>
         </div>
 
-        {/* ── 闭环反馈详情卡片 ── */}
-        {prep.meta.diagnosis_feedback && (
-          <div style={{
-            background: 'rgba(255,0,255,0.04)', border: `1px solid ${MAGENTA}30`,
-            borderRadius: 10, padding: 14, marginBottom: 20,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-              <span style={{ fontSize: 20 }}>🔄</span>
-              <div>
-                <div style={{ color: MAGENTA, fontWeight: 700, fontSize: 13 }}>闭环反馈已应用</div>
-                <div style={{ color: DIM, fontSize: 11 }}>
-                  诊断时间：{prep.meta.diagnosis_feedback.applied_at || '未知'} · 综合评分：{prep.meta.diagnosis_feedback.overall_score}
-                </div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 11, color: '#ccc' }}>
-              <span style={{
-                padding: '4px 10px', background: 'rgba(255,68,68,0.08)', borderRadius: 4,
-                border: `1px solid ${RED}30`, color: RED,
-              }}>
-                📋 Gap清单已按薄弱项重排
-              </span>
-              <span style={{ color: DIM }}>→</span>
-              <span style={{
-                padding: '4px 10px', background: 'rgba(0,240,255,0.06)', borderRadius: 4,
-                border: `1px solid ${CYAN}30`, color: CYAN,
-              }}>
-                🎯 弱项生成新预测题
-              </span>
-              <span style={{ color: DIM }}>→</span>
-              <span style={{
-                padding: '4px 10px', background: 'rgba(34,255,34,0.06)', borderRadius: 4,
-                border: `1px solid ${GREEN}30`, color: GREEN,
-              }}>
-                ✏️ 自我介绍已优化
-              </span>
-            </div>
-            {prep.meta.diagnosis_feedback.weaknesses?.length > 0 && (
-              <div style={{ marginTop: 10, fontSize: 11, color: DIM }}>
-                诊断发现的薄弱项：
-                {prep.meta.diagnosis_feedback.weaknesses.map((w: string, i: number) => (
-                  <span key={i} style={{
-                    marginLeft: 6, padding: '1px 8px', background: 'rgba(255,68,68,0.08)',
-                    borderRadius: 3, color: '#ff8888', fontSize: 10,
-                  }}>{w}</span>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           {/* 保存到本地 */}
           <button
@@ -1126,120 +1104,19 @@ const InterviewPrep = () => {
         </div>
       </div>
 
-      {/* 如果从面试拷打回来，显示闭环操作 */}
-      {(sessionId || savedDiagnosisData) && (
-        <div style={{
-          background: 'rgba(255,0,255,0.06)', border: `1px solid ${MAGENTA}60`,
-          borderRadius: 10, padding: 16, marginBottom: 20,
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <span style={{ fontSize: 14, color: MAGENTA, fontWeight: 700 }}>
-              🔄 闭环反馈就绪
-            </span>
-            <button onClick={() => handleRefine(sessionId || '')} style={{
-              padding: '10px 22px', background: MAGENTA, color: '#fff',
-              border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
-            }}>
-              🔄 更新面试准备
-            </button>
-          </div>
-          <p style={{ color: '#ccc', fontSize: 12, lineHeight: 1.6, margin: 0 }}>
-            {sessionId ? (
-              <>面试会话 <code style={{ color: CYAN }}>{sessionId}</code> 已完成。</>
-            ) : (
-              <>已加载保存的诊断报告。</>
-            )}
-            点击「更新面试准备」将诊断暴露的薄弱项反馈到当前文档：
-            Gap 清单重新排序、弱项生成新预测题、自我介绍优化。
-          </p>
-        </div>
-      )}
-
-      {/* ── 导入已保存的诊断报告（闭环触发）── */}
-      {!sessionId && !savedDiagnosisData && (
-        <div style={{
-          background: 'rgba(255,0,255,0.03)', border: `1px dashed ${MAGENTA}40`,
-          borderRadius: 10, padding: 16, marginBottom: 20,
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <span style={{ fontSize: 13, color: MAGENTA, fontWeight: 600 }}>
-                📊 导入诊断报告（闭环优化）
-              </span>
-              <p style={{ color: DIM, fontSize: 11, margin: '4px 0 0' }}>
-                从已保存报告选择，或从外部文件导入，将面试暴露的薄弱项反馈到当前备战文档
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setSavedDiagnoses(getDiagnoses().filter(d => d.isPrepDriven && d.prepId === prep?.meta?.prep_id));
-                setShowDiagnosisImport(!showDiagnosisImport);
-              }}
-              style={{
-                padding: '8px 16px', background: 'transparent', border: `1px solid ${MAGENTA}`,
-                color: MAGENTA, borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {showDiagnosisImport ? '收起 ▾' : '选择报告 ▸'}
-            </button>
-          </div>
-
-          {/* 外部文件导入 */}
-          <div style={{ marginTop: 10 }}>
-            <FileDropZone
-              label="📂 从文件导入诊断报告"
-              accept=".json,.md,.docx"
-              onFile={handleDiagnosisFileImport}
-              isImported={importedDiagnosisSource === 'file'}
-            />
-          </div>
-
-          {showDiagnosisImport && (
-            <div style={{ marginTop: 12, borderTop: `1px solid ${BORDER}`, paddingTop: 12 }}>
-              {savedDiagnoses.length === 0 ? (
-                <p style={{ color: DIM, fontSize: 12, textAlign: 'center', padding: 12 }}>
-                  {getDiagnoses().filter(d => d.isPrepDriven).length === 0
-                    ? '暂无已保存的诊断报告。完成一次准备驱动面试后，在报告页点击「💾 保存」即可。'
-                    : '暂无匹配当前文档的诊断报告。请确认诊断报告的岗位与当前文档一致。'}
-                </p>
-              ) : (
-                savedDiagnoses.map(d => (
-                  <div key={d.id} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    padding: '10px 14px', borderBottom: `1px solid ${BORDER}`,
-                    transition: 'background 0.2s',
-                  }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: 12, color: '#fff' }}>
-                        🧠 综合评分 {d.diagnosis.overall_score} · {d.questionCount} 题
-                      </div>
-                      <div style={{ fontSize: 10, color: DIM, marginTop: 2 }}>
-                        {d.isPrepDriven ? '🎯 准备驱动' : '🤖 Agent'} · {new Date(d.savedAt).toLocaleDateString('zh-CN')}
-                        {d.sessionId && <span style={{ marginLeft: 8, color: DIM }}>会话: {d.sessionId.slice(0, 8)}...</span>}
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setSessionId(d.sessionId || null);
-                        setSavedDiagnosisData(d.diagnosis);
-                        setImportedDiagnosisSource('saved');
-                        setImportedDiagnosisText(null);
-                        setShowDiagnosisImport(false);
-                      }}
-                      style={{
-                        padding: '6px 12px', background: MAGENTA, color: '#fff',
-                        border: 'none', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                      }}
-                    >
-                      导入
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
+      {/* ── 闭环优化入口：点击回到 input 阶段的闭环模块 ── */}
+      {!prep?.meta?.diagnosis_feedback && (
+        <button
+          onClick={() => setStage('input')}
+          style={{
+            width: '100%', padding: '10px 0', marginBottom: 20,
+            background: 'rgba(255,0,255,0.06)', border: `1.5px solid ${MAGENTA}40`,
+            borderRadius: 10, color: MAGENTA, fontSize: 13, fontWeight: 700,
+            cursor: 'pointer', textAlign: 'center' as const,
+          }}
+        >
+          🔄 闭环优化 — 选择准备文档 + 诊断报告，反馈强化 →
+        </button>
       )}
 
       {error && <div style={{ background: 'rgba(255,68,68,0.1)', border: `1px solid ${RED}`, padding: 12, borderRadius: 8, marginBottom: 16, color: RED, fontSize: 13 }}>{error}</div>}
@@ -1250,13 +1127,13 @@ const InterviewPrep = () => {
           <SectionHeader title="一、公司与产品调研" sectionKey="research" />
           {expandedSection.has('research') && (
             <div style={{ padding: 16 }}>
-              <p style={{ fontSize: 13, lineHeight: 1.6, color: '#ccc' }}>{prep.company_research.company_overview || '暂无'}</p>
-              {prep.company_research.tech_culture && <p style={{ fontSize: 12, color: DIM, marginTop: 8 }}>🔧 技术文化：{prep.company_research.tech_culture}</p>}
-              {prep.company_research.key_focus_areas && prep.company_research.key_focus_areas.length > 0 && (
+              <p style={{ fontSize: 13, lineHeight: 1.6, color: '#ccc' }}>{prep.company_research.company_overview || [prep.company_research.company_profile, prep.company_research.tech_stack_focus].filter(Boolean).join('\n\n') || '暂无'}</p>
+              {prep.company_research.tech_culture && <p style={{ fontSize: 12, color: DIM, marginTop: 8 }}>🔧 技术文化：{Array.isArray(prep.company_research.tech_culture) ? prep.company_research.tech_culture.join('；') : prep.company_research.tech_culture}</p>}
+              {(Array.isArray(prep.company_research.key_focus_areas) && prep.company_research.key_focus_areas.length > 0) && (
                 <div style={{ marginTop: 8 }}>
                   <span style={{ fontSize: 12, color: CYAN }}>🎯 重点关注领域：</span>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
-                    {prep.company_research.key_focus_areas.map((area, idx) => (
+                    {(prep.company_research.key_focus_areas as string[]).map((area, idx) => (
                       <span key={idx} style={{ padding: '4px 10px', background: 'rgba(0,240,255,0.08)', border: `1px solid ${CYAN}40`, borderRadius: 4, fontSize: 11, color: CYAN }}>
                         {area}
                       </span>
@@ -1264,7 +1141,10 @@ const InterviewPrep = () => {
                   </div>
                 </div>
               )}
-              {prep.company_research.why_xiaohongshu_for_ai && <p style={{ fontSize: 12, color: DIM, marginTop: 8 }}>� 选择理由：{prep.company_research.why_xiaohongshu_for_ai}</p>}
+              {(!Array.isArray(prep.company_research.key_focus_areas) && prep.company_research.tech_stack_focus) && (
+                <p style={{ fontSize: 12, color: DIM, marginTop: 8 }}>🎯 技术方向：{prep.company_research.tech_stack_focus}</p>
+              )}
+              {prep.company_research.why_xiaohongshu_for_ai && <p style={{ fontSize: 12, color: DIM, marginTop: 8 }}>🎯 选择理由：{prep.company_research.why_xiaohongshu_for_ai}</p>}
             </div>
           )}
         </div>
@@ -1276,32 +1156,32 @@ const InterviewPrep = () => {
           <SectionHeader title="二、JD 深度解读 + 逐条匹配" sectionKey="jd" />
           {expandedSection.has('jd') && (
             <div style={{ padding: 16 }}>
-              {prep.jd_analysis.core_requirements && prep.jd_analysis.core_requirements.length > 0 && (
+              {Array.isArray(prep.jd_analysis.core_requirements) && prep.jd_analysis.core_requirements.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 11, color: CYAN, marginBottom: 6, fontWeight: 600 }}>🎯 核心要求</div>
-                  {prep.jd_analysis.core_requirements.map((req, idx) => (
+                  {prep.jd_analysis.core_requirements.map((req: any, idx: number) => (
                     <div key={idx} style={{ marginBottom: 4, fontSize: 12, color: '#ccc', paddingLeft: 12 }}>
-                      {idx + 1}. {req}
+                      {idx + 1}. {typeof req === 'object' ? JSON.stringify(req) : req}
                     </div>
                   ))}
                 </div>
               )}
-              {prep.jd_analysis.preferred_qualifications && prep.jd_analysis.preferred_qualifications.length > 0 && (
+              {Array.isArray(prep.jd_analysis.preferred_qualifications) && prep.jd_analysis.preferred_qualifications.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 11, color: GREEN, marginBottom: 6, fontWeight: 600 }}>⭐ 加分项</div>
-                  {prep.jd_analysis.preferred_qualifications.map((qual, idx) => (
+                  {prep.jd_analysis.preferred_qualifications.map((qual: any, idx: number) => (
                     <div key={idx} style={{ marginBottom: 4, fontSize: 12, color: '#ccc', paddingLeft: 12 }}>
-                      {idx + 1}. {qual}
+                      {idx + 1}. {typeof qual === 'object' ? JSON.stringify(qual) : qual}
                     </div>
                   ))}
                 </div>
               )}
-              {prep.jd_analysis.gap_identification && prep.jd_analysis.gap_identification.length > 0 && (
+              {Array.isArray(prep.jd_analysis.gap_identification) && prep.jd_analysis.gap_identification.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 11, color: YELLOW, marginBottom: 6, fontWeight: 600 }}>⚠️ 差距识别</div>
-                  {prep.jd_analysis.gap_identification.map((gap, idx) => (
+                  {prep.jd_analysis.gap_identification.map((gap: any, idx: number) => (
                     <div key={idx} style={{ marginBottom: 4, fontSize: 12, color: '#ccc', paddingLeft: 12 }}>
-                      {idx + 1}. {gap}
+                      {idx + 1}. {typeof gap === 'object' ? JSON.stringify(gap) : gap}
                     </div>
                   ))}
                 </div>
@@ -1317,7 +1197,7 @@ const InterviewPrep = () => {
           <SectionHeader title="三、定制版自我介绍" sectionKey="intro" badge={`${prep.self_intro.duration_seconds || 90}秒`} />
           {expandedSection.has('intro') && (
             <div style={{ padding: 16 }}>
-              {prep.self_intro.key_highlights && prep.self_intro.key_highlights.length > 0 && (
+              {Array.isArray(prep.self_intro.key_highlights) && prep.self_intro.key_highlights.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 11, color: DIM, marginBottom: 6, fontWeight: 600 }}>重点亮点：</div>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -1330,7 +1210,7 @@ const InterviewPrep = () => {
                 </div>
               )}
               <div style={{ background: 'rgba(0,240,255,0.04)', border: `1px solid ${CYAN}30`, borderRadius: 8, padding: 14, fontSize: 14, lineHeight: 1.8, color: '#ddd', whiteSpace: 'pre-wrap', fontStyle: 'italic' }}>
-                {prep.self_intro.script || '暂无'}
+                {prep.self_intro.script || prep.self_intro.script_draft || prep.self_intro.structure || '暂无'}
               </div>
             </div>
           )}
@@ -1533,39 +1413,71 @@ const InterviewPrep = () => {
           <SectionHeader title="附、Gap 清单（差距分析）" sectionKey="gap" />
           {expandedSection.has('gap') && (
             <div style={{ padding: 16 }}>
-              {/* 优势 */}
-              {prep.gap_analysis.strengths && prep.gap_analysis.strengths.length > 0 && (
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: GREEN, marginBottom: 8 }}>✅ 优势</div>
-                  {prep.gap_analysis.strengths.map((strength, i) => (
-                    <div key={i} style={{ padding: '8px 12px', background: 'rgba(34,255,34,0.06)', borderRadius: 8, marginBottom: 4, fontSize: 12 }}>
-                      <span style={{ color: '#ccc' }}>🎯 {strength}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {/* 劣势 */}
-              {prep.gap_analysis.weaknesses && prep.gap_analysis.weaknesses.length > 0 && (
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: RED, marginBottom: 8 }}>⚠️ 劣势</div>
-                  {prep.gap_analysis.weaknesses.map((weakness, i) => (
-                    <div key={i} style={{ padding: '8px 12px', background: 'rgba(255,68,68,0.06)', borderRadius: 8, marginBottom: 4, fontSize: 12 }}>
-                      <span style={{ color: '#ccc' }}>❌ {weakness}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {/* 应对策略 */}
-              {prep.gap_analysis.mitigation_strategies && prep.gap_analysis.mitigation_strategies.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: CYAN, marginBottom: 8 }}>💡 应对策略</div>
-                  {prep.gap_analysis.mitigation_strategies.map((strategy, i) => (
-                    <div key={i} style={{ padding: '8px 12px', background: 'rgba(0,240,255,0.06)', borderRadius: 8, marginBottom: 4, fontSize: 12 }}>
-                      <span style={{ color: '#ccc' }}>→ {strategy}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {/* 优势：从 strengths/strengths_vs_jd 或 priority_2 */}
+              {(() => {
+                const strengths = prep.gap_analysis.strengths || prep.gap_analysis.strengths_vs_jd;
+                const p2Items = (prep.gap_analysis.priority_2_should_fix || []).map((item: any) => typeof item === 'string' ? { gap: item, action: '' } : item);
+                // 只用一种来源，避免重复
+                const allStrengths: { gap: string; action?: string }[] = (strengths && strengths.length > 0) ? strengths.map((s: string) => ({ gap: s, action: '' })) : p2Items;
+                return allStrengths.length > 0 ? (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: GREEN, marginBottom: 8 }}>✅ 优势</div>
+                    {allStrengths.map((s, i) => (
+                      <div key={i} style={{ padding: '8px 12px', background: 'rgba(34,255,34,0.06)', borderRadius: 8, marginBottom: 4, fontSize: 12 }}>
+                        <span style={{ color: '#ccc' }}>🎯 {s.gap}</span>
+                        {s.action && <div style={{ color: DIM, fontSize: 11, marginTop: 4, paddingLeft: 16 }}>→ {s.action}</div>}
+                      </div>
+                    ))}
+                  </div>
+                ) : null;
+              })()}
+              {/* 劣势：从 weaknesses/weaknesses_vs_jd 或 priority_1 */}
+              {(() => {
+                const weaknesses = prep.gap_analysis.weaknesses || prep.gap_analysis.weaknesses_vs_jd;
+                const p1Items = (prep.gap_analysis.priority_1_must_fix || []).map((item: any) => typeof item === 'string' ? { gap: item, action: '' } : item);
+                // 只用一种来源，避免重复
+                const allWeaknesses: { gap: string; action?: string }[] = (weaknesses && weaknesses.length > 0) ? weaknesses.map((w: string) => ({ gap: w, action: '' })) : p1Items;
+                return allWeaknesses.length > 0 ? (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: RED, marginBottom: 8 }}>⚠️ 劣势</div>
+                    {allWeaknesses.map((w, i) => (
+                      <div key={i} style={{ padding: '8px 12px', background: 'rgba(255,68,68,0.06)', borderRadius: 8, marginBottom: 4, fontSize: 12 }}>
+                        <span style={{ color: '#ccc' }}>❌ {w.gap}</span>
+                        {w.action && <div style={{ color: DIM, fontSize: 11, marginTop: 4, paddingLeft: 16 }}>→ {w.action}</div>}
+                      </div>
+                    ))}
+                  </div>
+                ) : null;
+              })()}
+              {/* 应对策略：从 mitigation_strategies 或 priority_3 */}
+              {(() => {
+                const strategies = prep.gap_analysis.mitigation_strategies;
+                const p3Items = (prep.gap_analysis.priority_3_nice_to_have || []).map((item: any) => typeof item === 'string' ? { gap: item, action: '' } : item);
+                // 只用一种来源，避免重复
+                const allStrategies: { gap: string; action?: string }[] = (strategies && strategies.length > 0) ? strategies.map((s: string) => ({ gap: s, action: '' })) : p3Items;
+                return allStrategies.length > 0 ? (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: CYAN, marginBottom: 8 }}>💡 应对策略</div>
+                    {allStrategies.map((s, i) => (
+                      <div key={i} style={{ padding: '8px 12px', background: 'rgba(0,240,255,0.06)', borderRadius: 8, marginBottom: 4, fontSize: 12 }}>
+                        <span style={{ color: '#ccc' }}>→ {s.gap}</span>
+                        {s.action && <div style={{ color: DIM, fontSize: 11, marginTop: 4, paddingLeft: 16 }}>💡 {s.action}</div>}
+                      </div>
+                    ))}
+                  </div>
+                ) : null;
+              })()}
+              {/* 空状态 */}
+              {(() => {
+                const hasAny = (prep.gap_analysis.strengths || prep.gap_analysis.strengths_vs_jd || prep.gap_analysis.priority_2_should_fix)?.length
+                  || (prep.gap_analysis.weaknesses || prep.gap_analysis.weaknesses_vs_jd || prep.gap_analysis.priority_1_must_fix)?.length
+                  || (prep.gap_analysis.mitigation_strategies || prep.gap_analysis.priority_3_nice_to_have)?.length;
+                return !hasAny ? (
+                  <div style={{ fontSize: 12, color: DIM, textAlign: 'center', padding: 12 }}>
+                    Gap清单为空
+                  </div>
+                ) : null;
+              })()}
             </div>
           )}
         </div>

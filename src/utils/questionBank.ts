@@ -7,8 +7,14 @@ const CUSTOM_QUESTIONS_KEY = 'ai_interview_custom_questions';
 const QUESTION_BANK_VERSION_KEY = 'ai_interview_question_bank_version';
 const CURRENT_VERSION = '3.1'; // 更新版本号以触发数据更新（3.1: 确保全部10个分类加载）
 
+// 内存缓存，避免每次 JSON.parse
+let cachedBank: QuestionBankItem[] | null = null;
+
 // 初始化题库数据
 const initializeQuestionBank = (): QuestionBankItem[] => {
+  // 命中内存缓存则直接返回
+  if (cachedBank) return cachedBank;
+
   const stored = localStorage.getItem(QUESTION_BANK_KEY);
   const storedVersion = localStorage.getItem(QUESTION_BANK_VERSION_KEY);
   
@@ -32,10 +38,23 @@ const initializeQuestionBank = (): QuestionBankItem[] => {
 
     localStorage.setItem(QUESTION_BANK_KEY, JSON.stringify(initialBank));
     localStorage.setItem(QUESTION_BANK_VERSION_KEY, CURRENT_VERSION);
+    cachedBank = initialBank;
     return initialBank;
   }
 
-  return JSON.parse(stored);
+  const parsed: QuestionBankItem[] = JSON.parse(stored);
+  cachedBank = parsed;
+  return parsed;
+};
+
+// 使缓存失效（写操作后调用）
+const invalidateCache = () => { cachedBank = null; };
+
+// 写入 localStorage 并使缓存失效
+const saveBank = (data: QuestionBankItem[]) => {
+  localStorage.setItem(QUESTION_BANK_KEY, JSON.stringify(data));
+  invalidateCache();
+  cachedBank = data;
 };
 
 // 获取所有题目
@@ -91,7 +110,7 @@ export const addCustomQuestion = (input: CustomQuestionInput): QuestionBankItem 
   };
 
   allQuestions.push(newQuestion);
-  localStorage.setItem(QUESTION_BANK_KEY, JSON.stringify(allQuestions));
+  saveBank(allQuestions);
   
   return newQuestion;
 };
@@ -100,7 +119,7 @@ export const addCustomQuestion = (input: CustomQuestionInput): QuestionBankItem 
 export const addQuestions = (questions: QuestionBankItem[]): void => {
   const allQuestions = getAllQuestions();
   allQuestions.push(...questions);
-  localStorage.setItem(QUESTION_BANK_KEY, JSON.stringify(allQuestions));
+  saveBank(allQuestions);
 };
 
 // 添加AI生成的题目（支持多类别）
@@ -135,7 +154,7 @@ export const addAIQuestion = (
   };
 
   allQuestions.push(newQuestion);
-  localStorage.setItem(QUESTION_BANK_KEY, JSON.stringify(allQuestions));
+  saveBank(allQuestions);
   
   console.log('AI题目已添加到题库:', newQuestion);
   return newQuestion;
@@ -149,7 +168,7 @@ export const updateQuestion = (id: string, updates: Partial<QuestionBankItem>): 
   if (index === -1) return false;
   
   allQuestions[index] = { ...allQuestions[index], ...updates };
-  localStorage.setItem(QUESTION_BANK_KEY, JSON.stringify(allQuestions));
+  saveBank(allQuestions);
   
   return true;
 };
@@ -161,7 +180,7 @@ export const deleteQuestion = (id: string): boolean => {
   
   if (filtered.length === allQuestions.length) return false;
   
-  localStorage.setItem(QUESTION_BANK_KEY, JSON.stringify(filtered));
+  saveBank(filtered);
   return true;
 };
 
@@ -180,7 +199,7 @@ export const updateQuestionStats = (questionId: string, score: number): void => 
   question.correctRate = Math.round((question.correctAttempts / question.totalAttempts) * 100);
   question.isWrong = score < 7;
   
-  localStorage.setItem(QUESTION_BANK_KEY, JSON.stringify(allQuestions));
+  saveBank(allQuestions);
 };
 
 // 获取练习进度统计（支持多类别）
@@ -195,7 +214,7 @@ export const getPracticeProgress = (): PracticeProgress[] => {
     );
     const total = categoryQuestions.length;
     const completed = categoryQuestions.filter(q => q.totalAttempts > 0).length;
-    const mastered = categoryQuestions.filter(q => q.correctRate >= 70).length;
+    const mastered = categoryQuestions.filter(q => (q.correctRate ?? 0) >= 70).length;
     const totalAttempts = categoryQuestions.reduce((sum, q) => sum + q.totalAttempts, 0);
     const correctAttempts = categoryQuestions.reduce((sum, q) => sum + q.correctAttempts, 0);
     const correctRate = totalAttempts > 0 ? Math.round((correctAttempts / totalAttempts) * 100) : 0;
@@ -228,5 +247,5 @@ export const getWrongQuestions = (): QuestionBankItem[] => {
 // 获取未掌握的题目（正确率<70%）
 export const getUnmasteredQuestions = (): QuestionBankItem[] => {
   const allQuestions = getAllQuestions();
-  return allQuestions.filter(q => q.totalAttempts > 0 && q.correctRate < 70);
+  return allQuestions.filter(q => q.totalAttempts > 0 && (q.correctRate ?? 0) < 70);
 };

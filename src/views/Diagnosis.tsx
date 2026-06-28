@@ -5,14 +5,7 @@ import {
   RadarEntry,
   TimelinePoint,
 } from '../services/diagnosisService';
-
-// ── 颜色常量 ──
-const CYAN = '#00f0ff';
-const MAGENTA = '#ff00ff';
-const GREEN = '#22ff22';
-const YELLOW = '#ffff00';
-const DIM = '#555';
-const BG = '#0a0a0a';
+import { CYAN, MAGENTA, GREEN, YELLOW, DIM, BG } from '../theme/colors';
 
 // ── SVG 雷达图（≥3维）或条形图（<3维）──
 export const RadarChart = ({ data }: { data: Record<string, RadarEntry> }) => {

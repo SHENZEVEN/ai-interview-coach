@@ -1,15 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { matchResumeToJd, MatchResponse } from '../services/prepService';
 import { parseDocument } from '../utils/documentParser';
-
-const CYAN = '#00f0ff';
-const MAGENTA = '#ff00ff';
-const GREEN = '#22ff22';
-const YELLOW = '#ffff00';
-const RED = '#ff4444';
-const DIM = '#555';
-const CARD = '#111';
-const BORDER = '#222';
+import { CYAN, MAGENTA, GREEN, YELLOW, RED, DIM, CARD, BORDER } from '../theme/colors';
 
 type Stage = 'input' | 'matching' | 'result';
 

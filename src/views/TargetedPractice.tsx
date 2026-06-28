@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { HistoryRecord, Category } from '../types';
 import { aiGenerateQuestion, aiEvaluate, GeneratedQuestion } from '../services/aiService';
+import { DIFFICULTY_CONFIG, type DifficultyLevel } from '../services/resumeRoastService';
 import { saveHistoryRecord } from '../utils/storage';
 import { addAIQuestion, updateQuestionStats } from '../utils/questionBank';
 import { parseDocument } from '../utils/documentParser';
@@ -38,7 +39,15 @@ const TargetedPractice = () => {
   const [answers, setAnswers] = useState<Map<string, { answer: string; result: { score: number; comment: string; referenceAnswer: string } }>>(new Map());
   
   // 难度等级
-  const [difficulty, setDifficulty] = useState<'intern' | 'junior' | 'mid' | 'senior' | 'lead'>('mid');
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>('mid');
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 组件卸载时清理 interval
+  useEffect(() => {
+    return () => {
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    };
+  }, []);
 
   const handleGenerate = async () => {
     if (!jdText.trim()) return;
@@ -172,10 +181,10 @@ const TargetedPractice = () => {
 
     try {
       // 模拟AI思考进度
-      const progressInterval = setInterval(() => {
+      progressIntervalRef.current = setInterval(() => {
         setEvaluationProgress(prev => {
           if (prev >= 90) {
-            clearInterval(progressInterval);
+            if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
             return 90;
           }
           const increment = Math.random() * 15 + 5;
@@ -185,7 +194,7 @@ const TargetedPractice = () => {
 
       const evalResult = await aiEvaluate(currentQuestion.text, answer);
       
-      clearInterval(progressInterval);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
       setEvaluationProgress(100);
       await delay(300);
 
@@ -226,6 +235,8 @@ const TargetedPractice = () => {
     }
   };
 
+  const [showSummary, setShowSummary] = useState(false);
+
   const handleNextQuestion = () => {
     if (currentQuestionIndex < questions.length - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
@@ -233,8 +244,8 @@ const TargetedPractice = () => {
       setResult(null);
       setError(null);
     } else {
-      // 所有题目完成，重新生成
-      handleGenerate();
+      // 所有题目完成，显示总结报告
+      setShowSummary(true);
     }
   };
 
@@ -246,6 +257,7 @@ const TargetedPractice = () => {
     setCurrentQuestionIds([]);
     setCurrentQuestionIndex(0);
     setAnswers(new Map());
+    setShowSummary(false);
   };
 
   // 检测生成次数，显示提示
@@ -291,21 +303,15 @@ const TargetedPractice = () => {
           <div className="difficulty-selector">
             <div className="difficulty-label">选择难度</div>
             <div className="difficulty-options">
-              {[
-                { value: 'intern', label: '实习生', desc: '基础概念' },
-                { value: 'junior', label: '初级', desc: '基础应用' },
-                { value: 'mid', label: '中级', desc: '深入理解' },
-                { value: 'senior', label: '高级', desc: '架构设计' },
-                { value: 'lead', label: '专家', desc: '技术决策' }
-              ].map((level) => (
+              {(Object.entries(DIFFICULTY_CONFIG) as [DifficultyLevel, { label: string; description: string }][]).map(([value, { label, description }]) => (
                 <button
-                  key={level.value}
-                  className={`difficulty-btn ${difficulty === level.value ? 'active' : ''}`}
-                  onClick={() => setDifficulty(level.value as any)}
+                  key={value}
+                  className={`difficulty-btn ${difficulty === value ? 'active' : ''}`}
+                  onClick={() => setDifficulty(value)}
                   disabled={isGenerating}
                 >
-                  <div className="difficulty-btn-label">{level.label}</div>
-                  <div className="difficulty-btn-desc">{level.desc}</div>
+                  <div className="difficulty-btn-label">{label}</div>
+                  <div className="difficulty-btn-desc">{description.slice(0, 4)}</div>
                 </button>
               ))}
             </div>
@@ -506,7 +512,7 @@ const TargetedPractice = () => {
               ) : (
                 <>
                   <button className="btn btn-primary" onClick={handleNextQuestion}>
-                    {currentQuestionIndex + 1 >= questions.length ? '生成新题目' : '下一题'}
+                    {currentQuestionIndex + 1 >= questions.length ? '查看总结' : '下一题'}
                   </button>
                   <button 
                     className="btn btn-secondary" 
@@ -519,6 +525,58 @@ const TargetedPractice = () => {
             </div>
           </div>
         ) : null}
+
+        {/* ── 练习总结 ── */}
+        {showSummary && questions.length > 0 && (
+          <div className="td-practice-card" style={{ marginTop: 20 }}>
+            <h2 style={{ textAlign: 'center', marginBottom: 20 }}>练习总结</h2>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center', marginBottom: 20 }}>
+              <div style={{ textAlign: 'center', padding: 12, background: '#111', borderRadius: 8, minWidth: 100 }}>
+                <div style={{ fontSize: 24, fontWeight: 700, color: '#00f0ff' }}>{questions.length}</div>
+                <div style={{ fontSize: 12, color: '#888' }}>总题数</div>
+              </div>
+              <div style={{ textAlign: 'center', padding: 12, background: '#111', borderRadius: 8, minWidth: 100 }}>
+                <div style={{ fontSize: 24, fontWeight: 700, color: '#22ff22' }}>
+                  {Array.from(answers.values()).filter(a => a.result.score >= 60).length}
+                </div>
+                <div style={{ fontSize: 12, color: '#888' }}>及格数</div>
+              </div>
+              <div style={{ textAlign: 'center', padding: 12, background: '#111', borderRadius: 8, minWidth: 100 }}>
+                <div style={{ fontSize: 24, fontWeight: 700, color: '#ffff00' }}>
+                  {answers.size > 0 ? Math.round(Array.from(answers.values()).reduce((sum, a) => sum + a.result.score, 0) / answers.size) : 0}
+                </div>
+                <div style={{ fontSize: 12, color: '#888' }}>平均分</div>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              {questions.map((q, i) => {
+                const a = answers.get(currentQuestionIds[i]);
+                return (
+                  <div key={i} style={{ marginBottom: 8, padding: 10, border: '1px solid #222', borderRadius: 4, background: '#0d0d0d' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <span style={{ fontSize: 13, color: '#fff' }}>Q{i + 1}</span>
+                      <span style={{ fontSize: 12, color: a && a.result.score >= 60 ? '#22ff22' : '#ff4444' }}>
+                        {a ? `${a.result.score}分` : '未答'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: '#999' }}>{q.text.slice(0, 100)}...</div>
+                    {a && <div style={{ fontSize: 11, color: '#00f0ff', marginTop: 4 }}>💬 {a.result.comment.slice(0, 80)}</div>}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <button className="btn btn-primary" onClick={() => { setShowSummary(false); handleGenerate(); }}>
+                🔄 再来5题
+              </button>
+              <button className="btn btn-secondary" onClick={handleRestart}>
+                重新开始
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

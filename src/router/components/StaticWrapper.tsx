@@ -5,7 +5,6 @@ import History from "@/views/History";
 import QuestionBank from "@/views/QuestionBank";
 import ResumeRoast from "@/views/ResumeRoast";
 import InterviewPrep from "@/views/InterviewPrep";
-import QuickPrep from "@/views/QuickPrep";
 import { OFFLINE_MODE } from "@/services/aiService";
 import '../../styles/Layout.css';
 

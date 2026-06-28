@@ -22,6 +22,8 @@ export interface PrepMeta {
     weaknesses: string[];
     applied_at: string;
   };
+  refine_summary?: string;
+  refined_from?: string;
 }
 
 export interface PredictedQuestion {
@@ -49,9 +51,11 @@ export interface RequirementMatch {
 }
 
 export interface CompanyResearch {
-  company_overview: string;
+  company_overview?: string;
+  company_profile?: string;
+  tech_stack_focus?: string;
   tech_culture: string;
-  key_focus_areas: string[];
+  key_focus_areas?: string[];
   why_xiaohongshu_for_ai: string;
   why_this_company?: string;
 }
@@ -62,16 +66,31 @@ export interface JDAnalysis {
   gap_identification: string[];
 }
 
+export interface GapItem {
+  gap: string;
+  action: string;
+  time_estimate?: string;
+}
+
 export interface GapAnalysis {
-  strengths: string[];
-  weaknesses: string[];
-  mitigation_strategies: string[];
+  // 新格式（优先级分组，闭环优化使用）
+  priority_1_must_fix?: GapItem[];
+  priority_2_should_fix?: GapItem[];
+  priority_3_nice_to_have?: GapItem[];
+  // 旧格式（首次生成使用）
+  strengths?: string[];
+  weaknesses?: string[];
+  strengths_vs_jd?: string[];
+  weaknesses_vs_jd?: string[];
+  mitigation_strategies?: string[];
 }
 
 export interface SelfIntro {
   duration_seconds: number;
-  script: string;
+  script?: string;
   key_highlights: string[];
+  script_draft?: string;
+  structure?: string;
 }
 
 export interface PrepDocument {
@@ -109,7 +128,7 @@ export interface StartFromPrepRequest {
   prep_id?: string;
   resume_text?: string;
   difficulty?: string;
-  prep_data?: Record<string, unknown>;
+  prep_data?: PrepDocument | Record<string, unknown>;
 }
 
 export interface StartFromPrepResult {
@@ -146,7 +165,8 @@ export const generatePrep = async (req: PrepGenerateRequest): Promise<PrepDocume
 export interface StreamProgress {
   status: string;      // 当前状态
   content: string;     // 生成的文本片段
-  isComplete: boolean;  // 是否完成
+  progress: number;    // 进度百分比 0-100
+  isComplete: boolean; // 是否完成
   error?: string;      // 错误信息
 }
 
@@ -211,14 +231,16 @@ export const generatePrepStream = async (
               if (currentEventType === 'done') {
                 console.log('📥 收到 done 事件，parsed keys:', Object.keys(parsed));
                 if (parsed.content !== undefined) {
-                  console.log('📦 done.content 长度:', parsed.content.length);
-                  console.log('📦 done.content 前100字符:', parsed.content.substring(0, 100));
+                  const contentType = typeof parsed.content;
+                  console.log('📦 done.content type:', contentType, 'length:', String(parsed.content).length);
+                  console.log('📦 done.content 前100字符:', String(parsed.content).substring(0, 100));
                   // 检查 content 是否是 JSON 字符串
-                  if (typeof parsed.content === 'string' && parsed.content.trim().startsWith('{')) {
+                  if (contentType === 'string' && parsed.content.trim().startsWith('{')) {
                     finalContent = parsed.content;
-                  } else {
-                    // 如果不是字符串，尝试 JSON 序列化
+                  } else if (contentType === 'object') {
                     finalContent = JSON.stringify(parsed.content);
+                  } else {
+                    finalContent = String(parsed.content);
                   }
                 }
               } else if (parsed.status) {
@@ -226,13 +248,19 @@ export const generatePrepStream = async (
                   status: parsed.status,
                   content: collectedContent.join(''),
                   isComplete: false,
+                  progress: 0,
                 });
               } else if (parsed.content !== undefined) {
                 collectedContent.push(parsed.content);
+                // 根据内容长度估算进度（假设完整文档约 5000-10000 字符）
+                const totalLength = 8000;
+                const currentLength = collectedContent.join('').length;
+                const estimatedProgress = Math.min(Math.floor((currentLength / totalLength) * 100), 95);
                 onProgress({
-                  status: '正在生成内容...',
+                  status: `正在生成内容... ${estimatedProgress}%`,
                   content: collectedContent.join(''),
                   isComplete: false,
+                  progress: estimatedProgress,
                 });
               }
             } catch {
@@ -241,6 +269,7 @@ export const generatePrepStream = async (
                 status: data,
                 content: collectedContent.join(''),
                 isComplete: false,
+                progress: 0,
               });
             }
           }
@@ -252,6 +281,7 @@ export const generatePrepStream = async (
       status: '✅ 生成完成！正在解析...',
       content: collectedContent.join(''),
       isComplete: true,
+      progress: 100,
     });
 
     // 使用 done 事件中的完整内容，如果没有则使用收集的内容
@@ -293,6 +323,7 @@ export const generatePrepStream = async (
       status: '❌ 生成失败',
       content: collectedContent.join(''),
       isComplete: false,
+      progress: 0,
       error: errorMessage,
     });
     throw error;
@@ -317,7 +348,7 @@ export const refinePrep = async (req: PrepRefineRequest): Promise<PrepDocument> 
     try {
       const response = await fetchWithTimeout(`${API_BASE}/prep/refine`, {
         method: 'POST',
-        headers: buildHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req),
       }, PREP_TIMEOUT_MS);
 

@@ -1,5 +1,9 @@
 import os
-os.environ['LLM_API_KEY'] = 'sk-dZ5g0R81i673XNpNkkn6a0uzBq7lzwX6dsXVVA2DYZYfEw2Q'
+from dotenv import load_dotenv
+load_dotenv()
+if not os.environ.get('LLM_API_KEY'):
+    print('请在 backend/.env 中设置 LLM_API_KEY')
+    exit(1)
 
 from langchain_openai import ChatOpenAI
 

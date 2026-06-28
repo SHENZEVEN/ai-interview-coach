@@ -1,6 +1,8 @@
 import type { CognitiveDiagnosis, AgentEvaluation } from './diagnosisService';
+import type { AnswerRecord } from './resumeRoastService';
 
 const STORAGE_KEY = 'ai-interview-coach-diagnoses';
+const MAX_DIAGNOSES = 20;
 
 export interface SavedDiagnosis {
   id: string;
@@ -11,11 +13,7 @@ export interface SavedDiagnosis {
   difficulty: string;
   questionCount: number;
   diagnosis: CognitiveDiagnosis;
-  answers: {
-    questionText: string;
-    answer: string;
-    evaluation: AgentEvaluation;
-  }[];
+  answers: AnswerRecord[];
 }
 
 export const getDiagnoses = (): SavedDiagnosis[] => {
@@ -32,7 +30,7 @@ export const getDiagnosis = (id: string): SavedDiagnosis | undefined => {
   return getDiagnoses().find(d => d.id === id);
 };
 
-export const saveDiagnosis = (data: Omit<SavedDiagnosis, 'id' | 'savedAt'>): SavedDiagnosis => {
+export const saveDiagnosis = (data: Omit<SavedDiagnosis, 'id' | 'savedAt'>): { entry: SavedDiagnosis; trimmed: boolean } => {
   const diagnoses = getDiagnoses();
   const id = `diag_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const entry: SavedDiagnosis = {
@@ -41,10 +39,11 @@ export const saveDiagnosis = (data: Omit<SavedDiagnosis, 'id' | 'savedAt'>): Sav
     savedAt: Date.now(),
   };
   diagnoses.unshift(entry); // newest first
-  // Keep last 20 reports
-  const trimmed = diagnoses.slice(0, 20);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
-  return entry;
+  const trimmed = diagnoses.length > MAX_DIAGNOSES;
+  // Keep last MAX_DIAGNOSES reports
+  const sliced = diagnoses.slice(0, MAX_DIAGNOSES);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(sliced));
+  return { entry, trimmed };
 };
 
 export const deleteDiagnosis = (id: string): void => {

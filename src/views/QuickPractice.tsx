@@ -1,8 +1,9 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { Category, CATEGORIES, Question, HistoryRecord } from '../types';
 import { getQuestionsByCategory, updateQuestionStats } from '../utils/questionBank';
 import { aiEvaluate } from '../services/aiService';
+import { DIFFICULTY_CONFIG, type DifficultyLevel } from '../services/resumeRoastService';
 import { saveHistoryRecord } from '../utils/storage';
 import '../styles/QuickPractice.css';
 
@@ -26,6 +27,15 @@ const QuickPractice = () => {
   const [evaluationProgress, setEvaluationProgress] = useState(0); // 0-100 用于圆环形进度条
   const [currentResult, setCurrentResult] = useState<{ score: number; comment: string; referenceAnswer: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>('mid');
+  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 组件卸载时清理 interval
+  useEffect(() => {
+    return () => {
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    };
+  }, []);
 
   // ── 状态持久化：恢复之前的练习会话 ──
   useEffect(() => {
@@ -47,8 +57,7 @@ const QuickPractice = () => {
           });
           setCurrentAnswer(parsed.currentAnswer || '');
           setCurrentResult(parsed.currentResult || null);
-          // 清除保存的状态，避免重复恢复
-          localStorage.removeItem('quick-practice-session');
+          // 不立即删除：保留会话以便刷新后仍可恢复，在练习完成或开始新练习时清除
         }
       } catch (e) {
         console.error('恢复练习会话失败:', e);
@@ -58,6 +67,9 @@ const QuickPractice = () => {
 
   const startPractice = useCallback(() => {
     if (!selectedCategory) return;
+
+    // 开始新练习时清除旧会话
+    localStorage.removeItem('quick-practice-session');
 
     // 从题库获取该类别的题目
     const categoryQuestions = getQuestionsByCategory(selectedCategory);
@@ -99,10 +111,10 @@ const QuickPractice = () => {
 
     try {
       // 模拟AI思考进度
-      const progressInterval = setInterval(() => {
+      progressIntervalRef.current = setInterval(() => {
         setEvaluationProgress(prev => {
           if (prev >= 90) {
-            clearInterval(progressInterval);
+            if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
             return 90;
           }
           const increment = Math.random() * 15 + 5;
@@ -112,7 +124,7 @@ const QuickPractice = () => {
 
       const result = await aiEvaluate(currentQuestion.text, currentAnswer);
       
-      clearInterval(progressInterval);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
       setEvaluationProgress(100);
       await delay(300);
 
@@ -200,6 +212,7 @@ const QuickPractice = () => {
   }, [session, state, currentAnswer, currentResult]);
 
   const handleRestart = () => {
+    localStorage.removeItem('quick-practice-session');
     setState('select');
     setSession(null);
     setCurrentAnswer('');
@@ -257,6 +270,21 @@ const QuickPractice = () => {
             </div>
           </div>
           <div className="divider" />
+          <div className="category-section">
+            <div className="category-label">选择难度：</div>
+            <div className="category-buttons">
+              {(Object.entries(DIFFICULTY_CONFIG) as [DifficultyLevel, { label: string; description: string }][]).map(([value, { label }]) => (
+                <button
+                  key={value}
+                  className={`category-btn ${difficulty === value ? 'primary' : 'outline'}`}
+                  onClick={() => setDifficulty(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="divider" />
           <div className="start-section">
             <button
               className="start-btn"
@@ -273,12 +301,11 @@ const QuickPractice = () => {
         <div>
           <div className="practice-card">
             <div className="back-button-container">
-              <button 
-                className="back-btn" 
+              <button
+                className="back-btn"
                 onClick={() => {
                   if (window.confirm('确定要退出练习吗？当前进度将被保存。')) {
                     handleRestart();
-                    window.history.back();
                   }
                 }}
               >

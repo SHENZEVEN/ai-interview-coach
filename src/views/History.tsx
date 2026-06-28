@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router';
 import { HistoryRecord } from '../types';
 import { 
   getHistoryRecords, 
@@ -19,6 +20,7 @@ const MODE_LABELS: Record<string, string> = {
 };
 
 const History = () => {
+  const navigate = useNavigate();
   const [records, setRecords] = useState<HistoryRecord[]>([]);
   const [activeTab, setActiveTab] = useState<TabType>('all');
   const [selectedRecord, setSelectedRecord] = useState<HistoryRecord | null>(null);
@@ -54,11 +56,16 @@ const History = () => {
   };
 
   const handleRetry = (record: HistoryRecord) => {
-    // 跳转到对应模式并携带题目信息
+    // 使用 react-router navigate 并携带题目上下文
+    const state = { retryQuestion: record.questionText, retryMode: record.mode };
     if (record.mode === 'quick') {
-      window.location.href = '/quick';
+      navigate('/quick', { state });
+    } else if (record.mode === 'targeted') {
+      navigate('/targeted', { state });
+    } else if (record.mode === 'roast' || record.mode === 'prep_drill') {
+      navigate('/roast', { state });
     } else {
-      window.location.href = '/targeted';
+      navigate('/quick', { state });
     }
   };
 

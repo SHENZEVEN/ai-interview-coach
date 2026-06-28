@@ -49,17 +49,18 @@ export const fetchWithTimeout = async (url: string, options: RequestInit, timeou
 // 带重试的 fetch
 export const fetchWithRetry = async (url: string, options: RequestInit, retries = MAX_RETRIES): Promise<Response> => {
   let lastError: Error | null = null;
+  const attempts = Math.max(retries, 1); // 至少执行1次
   
-  for (let i = 0; i < retries; i++) {
+  for (let i = 0; i < attempts; i++) {
     try {
       const response = await fetchWithTimeout(url, options);
       
-      // 如果是 4xx 错误（客户端错误），不重试
+      // 4xx 客户端错误：不重试，直接抛出让调用方处理
       if (response.status >= 400 && response.status < 500) {
-        return response;
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
       
-      // 如果是 5xx 错误或网络错误，重试
+      // 5xx 服务端错误：重试
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -68,10 +69,10 @@ export const fetchWithRetry = async (url: string, options: RequestInit, retries 
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('未知错误');
       
-      // 如果不是最后一次重试，等待后继续
-      if (i < retries - 1) {
+      // 如果不是最后一次尝试，等待后继续
+      if (i < attempts - 1) {
         console.warn(`API请求失败，第 ${i + 1} 次重试...`, lastError.message);
-        await delay(RETRY_DELAY_MS * (i + 1)); // 指数退避
+        await delay(RETRY_DELAY_MS * (i + 1)); // 递增退避
       }
     }
   }
@@ -85,11 +86,9 @@ export const generateQuestion = async (jdText: string, difficulty: 'intern' | 'j
   }
 
   try {
-    const response = await fetchWithRetry(`${API_BASE}/generate-question`, {
+    const response = await fetchWithRetry(`${AGNES_API_BASE}/generate-question`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: buildHeaders(),
       body: JSON.stringify({
         jd_text: jdText,
         difficulty: difficulty,

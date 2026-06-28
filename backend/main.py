@@ -63,10 +63,18 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── 全局异常处理：确保所有响应（包括 500）都经过 CORS 中间件 ──
+from fastapi import Request
+from fastapi.responses import JSONResponse as _JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return _JSONResponse(status_code=500, content={"detail": str(exc)})
 
 # ── 修复 UTF-8 编码问题 ──
 from fastapi.responses import JSONResponse
@@ -523,7 +531,145 @@ async def stream_generate_prep(req: PrepGenerateRequest):
                 except:
                     yield {"event": "error", "data": json.dumps({"error": "无法解析生成的文档"}, ensure_ascii=False)}
                     return
-            
+
+            # ── 轻量级字段名映射（只改 key 名，不改数据）──
+            _FIELD_MAP = {
+                "chapter_1_company_research": "company_research",
+                "section_1_company_research": "company_research",
+                "chapter_2_jd_analysis": "jd_analysis",
+                "jd_match_analysis": "jd_analysis",
+                "jd_matching_analysis": "jd_analysis",
+                "jd_interpretation": "jd_analysis",
+                "section_2_jd_analysis": "jd_analysis",
+                "chapter_5_high_frequency_questions": "predicted_questions",
+                "high_frequency_questions": "predicted_questions",
+                "section_5_high_frequency_questions": "predicted_questions",
+                "chapter_3_self_introduction": "self_intro",
+                "self_introduction": "self_intro",
+                "section_3_self_introduction": "self_intro",
+                "appendix_gap_list": "gap_analysis",
+                "gap_list": "gap_analysis",
+                "section_6_gap_analysis": "gap_analysis",
+                "section_4_project_deep_dive": "star_stories",
+                "project_deep_dive": "star_stories",
+                "section_7_coaching_tips": "coaching_tips",
+                "section_7_ask_back_questions": "ask_back_questions",
+                "section_8_ask_back_questions": "ask_back_questions",
+            }
+            # 处理嵌套
+            if "interview_prep_doc" in prep_doc and isinstance(prep_doc["interview_prep_doc"], dict):
+                inner = prep_doc.pop("interview_prep_doc")
+                prep_doc.update(inner)
+            # 重命名
+            for old_key, new_key in _FIELD_MAP.items():
+                if old_key in prep_doc and old_key != new_key:
+                    prep_doc[new_key] = prep_doc.pop(old_key)
+            print(f"[main.py] field mapping done, keys={list(prep_doc.keys())}")
+
+            # ── 深层字段名对齐（LLM 返回的字段名与前端期望不一致）──
+            # company_research 内部字段映射
+            if isinstance(prep_doc.get("company_research"), dict):
+                cr = prep_doc["company_research"]
+                if "company_overview" not in cr:
+                    for k in ["overview", "company_background", "background", "core_business"]:
+                        if k in cr: cr["company_overview"] = cr.pop(k); break
+                if "tech_culture" not in cr:
+                    for k in ["culture_values", "culture_signals", "culture", "team_culture"]:
+                        if k in cr: cr["tech_culture"] = cr.pop(k); break
+                # tech_culture: 数组→字符串
+                if "tech_culture" in cr and isinstance(cr["tech_culture"], list):
+                    cr["tech_culture"] = "；".join(str(x) for x in cr["tech_culture"])
+                if "key_focus_areas" not in cr:
+                    for k in ["tech_focus_areas", "focus_areas", "product_features", "key_areas"]:
+                        if k in cr:
+                            v = cr.pop(k)
+                            cr["key_focus_areas"] = v if isinstance(v, list) else [v]
+                            break
+                if "why_xiaohongshu_for_ai" not in cr:
+                    for k in ["interview_focus", "interview_strategy", "ai_strategy", "why_this_company", "why_company"]:
+                        if k in cr: cr["why_xiaohongshu_for_ai"] = cr.pop(k); break
+                # recent_news 归一化
+                if "recent_news" in cr and isinstance(cr["recent_news"], list):
+                    cr["recent_news"] = "; ".join(str(x) for x in cr["recent_news"])
+
+            # jd_analysis 内部字段映射
+            if isinstance(prep_doc.get("jd_analysis"), dict):
+                jd = prep_doc["jd_analysis"]
+                if "core_requirements" not in jd:
+                    for k in ["key_requirements", "requirements", "core_reqs"]:
+                        if k in jd:
+                            v = jd.pop(k)
+                            jd["core_requirements"] = v if isinstance(v, list) else [v]
+                            break
+                # core_requirements: 对象数组 [{category, items}] → 扁平字符串数组
+                if "core_requirements" in jd and isinstance(jd["core_requirements"], list):
+                    flat = []
+                    for item in jd["core_requirements"]:
+                        if isinstance(item, str):
+                            flat.append(item)
+                        elif isinstance(item, dict):
+                            cat = item.get("category", "")
+                            sub_items = item.get("items", [])
+                            if cat and sub_items:
+                                flat.append(f"【{cat}】")
+                                for si in sub_items:
+                                    flat.append(f"  · {si}" if isinstance(si, str) else str(si))
+                            elif cat:
+                                flat.append(cat)
+                            else:
+                                flat.append(str(item))
+                    jd["core_requirements"] = flat
+                # 确保数组字段确实是数组
+                for arr_key in ["core_requirements", "preferred_qualifications", "gap_identification"]:
+                    if arr_key in jd and not isinstance(jd[arr_key], list):
+                        v = jd[arr_key]
+                        jd[arr_key] = [v] if isinstance(v, (str, dict)) else []
+
+            # self_intro 格式归一化
+            if isinstance(prep_doc.get("self_intro"), str):
+                prep_doc["self_intro"] = {
+                    "script": prep_doc["self_intro"],
+                    "key_highlights": [],
+                    "duration_seconds": 90
+                }
+            elif isinstance(prep_doc.get("self_intro"), dict):
+                si = prep_doc["self_intro"]
+                # script 为空时尝试 script_draft
+                if not si.get("script") and si.get("script_draft"):
+                    si["script"] = si.pop("script_draft")
+                elif not si.get("script") and si.get("content"):
+                    si["script"] = si.pop("content")
+                if "key_highlights" not in si: si["key_highlights"] = []
+                if "duration_seconds" not in si: si["duration_seconds"] = 90
+
+            # gap_analysis: 旧格式 {strengths/weaknesses/mitigation} → 新格式 {priority_1/priority_2/priority_3}
+            if isinstance(prep_doc.get("gap_analysis"), dict):
+                ga = prep_doc["gap_analysis"]
+                if "priority_1_must_fix" not in ga and ("weaknesses_vs_jd" in ga or "weaknesses" in ga):
+                    p1_items = []
+                    for w in ga.get("weaknesses_vs_jd", ga.get("weaknesses", [])):
+                        if isinstance(w, dict):
+                            p1_items.append({"gap": w.get("gap", str(w)), "action": w.get("action", ""), "time_estimate": w.get("time_estimate", "")})
+                        else:
+                            p1_items.append({"gap": str(w), "action": "", "time_estimate": ""})
+                    p2_items = []
+                    for s in ga.get("strengths_vs_jd", ga.get("strengths", [])):
+                        if isinstance(s, str):
+                            p2_items.append({"gap": s, "action": "", "time_estimate": ""})
+                    p3_items = []
+                    for m in ga.get("mitigation_strategies", []):
+                        if isinstance(m, str):
+                            p3_items.append({"gap": m, "action": "", "time_estimate": ""})
+                    ga["priority_1_must_fix"] = p1_items
+                    ga["priority_2_should_fix"] = p2_items
+                    ga["priority_3_nice_to_have"] = p3_items
+
+            # predicted_questions 确保是数组
+            if "predicted_questions" in prep_doc and not isinstance(prep_doc["predicted_questions"], list):
+                prep_doc["predicted_questions"] = []
+
+            print(f"[main.py] deep field mapping done")
+
             # 强制覆盖 meta 字段为前端期望的格式
             prep_id = uuid.uuid4().hex[:12]
             prep_doc['meta'] = {
@@ -541,7 +687,16 @@ async def stream_generate_prep(req: PrepGenerateRequest):
             
             # 重新序列化
             content = json.dumps(prep_doc, ensure_ascii=False)
-            print(f"[main.py] 成功添加 meta 字段, prep_id={prep_id}")
+            print(f"[main.py] 成功添加 meta 字段, prep_id={prep_id}, content_length={len(content)}")
+            print(f"[main.py] prep_doc keys: {list(prep_doc.keys())}")
+            print(f"[main.py] company_research type: {type(prep_doc.get('company_research')).__name__}")
+            if isinstance(prep_doc.get('company_research'), dict):
+                print(f"[main.py] company_research keys: {list(prep_doc['company_research'].keys())}")
+            print(f"[main.py] jd_analysis type: {type(prep_doc.get('jd_analysis')).__name__}")
+            if isinstance(prep_doc.get('jd_analysis'), dict):
+                print(f"[main.py] jd_analysis keys: {list(prep_doc['jd_analysis'].keys())}")
+            print(f"[main.py] self_intro type: {type(prep_doc.get('self_intro')).__name__}")
+            print(f"[main.py] predicted_questions count: {len(prep_doc.get('predicted_questions', []))}")
             
             # 发送完成信号
             yield {"event": "status", "data": json.dumps({"status": "面试准备文档生成完成！"}, ensure_ascii=False)}
@@ -576,7 +731,6 @@ async def get_prep(prep_id: str):
 
 @app.post(
     "/api/prep/refine",
-    response_model=PrepDocument,
     responses={400: {"model": ErrorResponse}},
 )
 async def refine_prep(req: PrepRefineRequest):
@@ -607,10 +761,25 @@ async def refine_prep(req: PrepRefineRequest):
         raise HTTPException(400, detail="请提供 session_id、diagnosis_data 或 diagnosis_text")
 
     try:
-        return prep_agent.refine_with_diagnosis(
+        result = prep_agent.refine_with_diagnosis(
             req.prep_id, diagnosis_dict, req.prep_data,
             prep_text=req.prep_text, diagnosis_text=req.diagnosis_text,
         )
+        # 日志：打印优化后关键字段摘要
+        try:
+            print(f"[refine_prep] Result keys: {list(result.keys())}")
+            si = result.get("self_intro")
+            print(f"[refine_prep] self_intro type={type(si).__name__}, value={str(si)[:200] if si else 'EMPTY'}")
+            pq = result.get("predicted_questions", [])
+            print(f"[refine_prep] predicted_questions count={len(pq)}")
+            ga = result.get("gap_analysis")
+            print(f"[refine_prep] gap_analysis keys={list(ga.keys()) if isinstance(ga, dict) else 'EMPTY'}")
+            meta = result.get("meta", {})
+            print(f"[refine_prep] meta.diagnosis_feedback={meta.get('diagnosis_feedback', 'NONE')}")
+            print(f"[refine_prep] meta.refine_summary={meta.get('refine_summary', 'NONE')}")
+        except Exception as log_err:
+            print(f"[refine_prep] Log error: {log_err}")
+        return result
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
     except Exception as e:

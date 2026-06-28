@@ -35,6 +35,8 @@ export const parseDocument = async (file: File): Promise<string> => {
     return parseWord(file);
   } else if (isImageFile(file)) {
     return parseImage(file);
+  } else if (extension === 'txt' || extension === 'md') {
+    return file.text();
   } else {
     throw new Error('不支持的文件格式');
   }
@@ -42,7 +44,7 @@ export const parseDocument = async (file: File): Promise<string> => {
 
 // 获取支持的文件格式
 export const getSupportedFormats = (): string => {
-  return '.pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp';
+  return '.pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp,.txt,.md';
 };
 
 export const extractQuestions = (text: string, category: Category): ParsedQuestion[] => {

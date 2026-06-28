@@ -177,19 +177,32 @@ class GapItem(BaseModel):
 
 
 class CompanyResearch(BaseModel):
-    overview: str
-    product_features: str
-    competitors: str
-    ai_strategy: str
-    recent_news: str
-    culture_signals: str
+    company_overview: str = ""
+    tech_culture: str = ""
+    key_focus_areas: list[str] = Field(default_factory=list)
+    why_xiaohongshu_for_ai: str = ""
+    overview: str = ""
+    product_features: str = ""
+    competitors: str = ""
+    ai_strategy: str = ""
+    recent_news: str = ""
+    culture_signals: str = ""
     sources: list[str] = Field(default_factory=list)
 
 
 class JDAnalysis(BaseModel):
-    core_intent: str
+    core_intent: str = ""
+    core_requirements: list[str] = Field(default_factory=list)
+    preferred_qualifications: list[str] = Field(default_factory=list)
+    gap_identification: list[str] = Field(default_factory=list)
     plain_language: list[JDPlainLanguage] = Field(default_factory=list)
     requirement_matching: list[RequirementMatch] = Field(default_factory=list)
+
+
+class SelfIntro(BaseModel):
+    key_highlights: list[str] = Field(default_factory=list)
+    script: str = ""
+    duration_seconds: int = 90
 
 
 class GapAnalysis(BaseModel):

@@ -550,11 +550,10 @@ class PrepAgent:
                               prep_text: str = None, diagnosis_text: str = None) -> dict:
         """基于认知诊断结果反向更新面试准备。
 
-        闭环核心：练习暴露的问题 → 更新 Gap 清单和预测题目。
+        闭环核心：练习暴露的问题 → 重新生成完整准备文档（与 generate 同逻辑）。
 
-        prep_data: 可选，传入则直接使用（绕过 _prep_store 内存存储，解决重启丢失问题）。
-        prep_text: 可选，原始准备文档文本（.md/.docx），当 prep_data 为空时 LLM 解析后使用。
-        diagnosis_text: 可选，原始诊断报告文本（.md/.docx），当 diagnosis 无结构化数据时 LLM 解析后使用。
+        与 generate 的唯一区别：user prompt 额外注入诊断结果，要求 LLM 基于真实面试表现
+        调整各章节重点。输出结构、_ensure_structure、字段名映射等完全复用 generate 逻辑。
         """
         # 解析 prep：结构化数据优先，否则尝试从文本解析
         if prep_data:
@@ -570,10 +569,8 @@ class PrepAgent:
         has_structured = bool(diagnosis.get("weaknesses") or diagnosis.get("knowledge_map"))
         if not has_structured and diagnosis_text:
             parsed_diag = self._parse_diagnosis_text(diagnosis_text)
-            # 合并：parsed 提供结构化字段，原始 diagnosis 中的其他字段保留
             diagnosis = {**parsed_diag, **diagnosis}
         elif not has_structured:
-            # 既无结构化数据也无文本 — 用最小兼容数据让 refine 继续
             diagnosis.setdefault("weaknesses", [])
             diagnosis.setdefault("knowledge_map", [])
             diagnosis.setdefault("timeline_data", [])
@@ -581,55 +578,147 @@ class PrepAgent:
         weaknesses = diagnosis.get("weaknesses", [])
         knowledge_map = diagnosis.get("knowledge_map", [])
         timeline = diagnosis.get("timeline_data", [])
-
-        # 找出得分最低的领域
         weak_areas = [k for k in knowledge_map if k.get("coverage", 0) < 0.5]
         low_score_questions = [t for t in timeline if t.get("score", 100) < 50]
 
-        user_prompt = f"""## 面试准备更新（基于真实面试表现）
+        # 从原始 prep 提取上下文（简历、JD、公司名等，尽量复用）
+        resume_text = prep.get("meta", {}).get("_resume_text", "")
+        jd_text = prep.get("meta", {}).get("_jd_text", "")
+        company_name = prep.get("meta", {}).get("company_name", "")
+        role_name = prep.get("meta", {}).get("role_name", "")
+        direction = prep.get("meta", {}).get("direction", "E")
+        difficulty = prep.get("meta", {}).get("difficulty", "mid")
+        direction_label = ROLE_DIRECTIONS.get(direction, "其他")
 
-**原始准备文档**：
-{json.dumps(prep, ensure_ascii=False, indent=2)[:3000]}
+        # ── 构建 system prompt（与 generate 完全相同）──
+        system_prompt = f"""{FALLBACK_METHODOLOGY}
 
-**认知诊断结果**：
-- 薄弱项：{json.dumps(weaknesses, ensure_ascii=False)}
-- 弱覆盖领域：{json.dumps(weak_areas, ensure_ascii=False)}
-- 低分题目：{json.dumps(low_score_questions, ensure_ascii=False)}
+重要规则：
+1. 严格按照JSON格式输出，不要JSON之外的文字
+2. 公司调研章节标注'基于训练数据'
+3. 若方向为E(AI产品)，关注AI基础认知/产品设计/行业格局类题目
+4. 若方向为F(AI全栈开发)，关注LLM理论/RAG实战/Agent开发/系统设计/编程算法类题目"""
 
-请更新以下部分（JSON格式）：
-{{
-  "updated_gap_analysis": {{
-    "priority_1_must_fix": [将诊断暴露的弱项提到P1],
-    "priority_2_should_fix": [...],
-    "priority_3_nice_to_have": [...]
-  }},
-  "new_target_questions": [针对弱项的新题目 3-5 道],
-  "refined_self_intro": "根据实际表现优化后的自我介绍（≤250字）",
-  "coaching_tips": ["基于实际表现的针对性建议 3-5 条"]
-}}"""
+        # ── 构建 user prompt（在 generate 的基础上注入诊断上下文）──
+        # 提取原始文档摘要供 LLM 参考
+        orig_questions_summary = ""
+        if isinstance(prep.get("predicted_questions"), list):
+            orig_questions_summary = "\n".join(
+                f"  {i+1}. [{q.get('category','?')}] {q.get('question','')[:60]}"
+                for i, q in enumerate(prep["predicted_questions"][:10])
+            )
 
-        result = self.llm.invoke(user_prompt)
+        orig_self_intro = ""
+        if isinstance(prep.get("self_intro"), dict):
+            orig_self_intro = prep["self_intro"].get("script", "")
+        elif isinstance(prep.get("self_intro"), str):
+            orig_self_intro = prep["self_intro"]
+
+        user_prompt = f"""## 面试准备任务（闭环优化版）
+
+**目标岗位**：{role_name}
+**目标公司**：{company_name}
+**岗位方向**：{direction_label}
+**目标职级**：{difficulty_label(difficulty)}
+
+**候选人简历**：
+{resume_text or "未提供"}
+
+**岗位 JD**：
+{jd_text or "未提供"}
+
+---
+
+### ⚠️ 闭环优化指令（重要！必须优先遵循）
+
+候选人已完成了一轮面试，诊断结果如下：
+
+- **综合评分**：{diagnosis.get('overall_score', '?')}/100
+- **薄弱项**：{json.dumps(weaknesses, ensure_ascii=False)}
+- **弱覆盖领域**：{json.dumps(weak_areas, ensure_ascii=False)}
+- **低分题目**：{json.dumps(low_score_questions, ensure_ascii=False)[:500]}
+
+**原始准备文档关键内容**：
+- 自我介绍：{orig_self_intro[:200] or '（未生成）'}
+- 预测题目：
+{orig_questions_summary or '（未生成）'}
+
+你必须基于以上诊断结果，重新生成**完整**面试准备文档，核心调整原则：
+1. **预测题目重排**：诊断暴露的弱领域题目排前面（6-8题即可，不要堆砌），已验证强项可减少
+2. **自我介绍重编排**：弱项领域多给时间展开，强项一笔带过
+3. **Gap清单按真实证据重排**：诊断已验证的弱项必须提到P1，不能停留在"可能"层面
+4. **STAR故事对齐弱项**：优先选择能覆盖薄弱项的项目经历
+5. **coaching_tips基于实际表现**：不是泛泛建议，而是针对诊断暴露的具体问题给出可操作建议
+
+---
+
+请根据上述信息生成完整面试准备文档。严格按照JSON格式输出。
+
+特别要求：
+1. JD逐条匹配分析：先找简历证据再下判断，没有证据的标"-"
+2. 自我介绍：≤250字，口语化，针对该岗位编排
+3. 预测题目：含面经预测 + 岗位专项 + JD推导 + 简历深挖四种来源
+4. Gap清单：按优先级1/2/3分组，含具体补课行动
+5. coaching_tips：基于简历和JD差距，给出3-5条针对性备考建议（具体可操作的建议，而非泛泛而谈）
+6. ask_back_questions：生成5-8个反问面试官的问题，覆盖公司战略/团队文化/岗位发展/技术方向/工作节奏等维度，体现求职者的思考深度"""
+
+        # ── 调用 LLM（与 generate 完全相同的流程）──
+        result = self.llm.invoke(system_prompt + "\n\n" + user_prompt)
         content = result.content if hasattr(result, 'content') else str(result)
-        update_data = self._extract_json(content)
 
-        # 合并更新
-        if update_data.get("updated_gap_analysis"):
-            prep["gap_analysis"] = update_data["updated_gap_analysis"]
-        if update_data.get("new_target_questions"):
-            prep["predicted_questions"].extend(update_data["new_target_questions"])
-        if update_data.get("refined_self_intro"):
-            prep["self_intro"] = update_data["refined_self_intro"]
-        if update_data.get("coaching_tips"):
-            prep["coaching_tips"] = update_data["coaching_tips"]
+        # DEBUG
+        try:
+            print(f"[prep_agent] refine_with_diagnosis: LLM output length = {len(content)} chars")
+            safe_content = content.encode('utf-8', errors='replace').decode('utf-8')
+            print(f"[prep_agent] refine_with_diagnosis: LLM output (first 300 chars): {safe_content[:300]}")
+        except Exception as e:
+            print(f"[prep_agent] Failed to print LLM output: {e}")
 
-        prep["meta"]["diagnosis_feedback"] = {
-            "overall_score": diagnosis.get("overall_score"),
-            "weaknesses": weaknesses,
-            "applied_at": self._now_iso(),
+        # ── 解析 JSON + _ensure_structure（与 generate 完全相同）──
+        prep_data = self._extract_json(content)
+        prep_data = self._ensure_structure(prep_data, resume_text, jd_text)
+
+        # DEBUG: 打印关键字段
+        try:
+            print(f"[prep_agent] refine_with_diagnosis: after _ensure_structure keys = {list(prep_data.keys())}")
+            si = prep_data.get("self_intro")
+            print(f"[prep_agent] self_intro type={type(si).__name__}, preview={str(si)[:200]}")
+            print(f"[prep_agent] predicted_questions count={len(prep_data.get('predicted_questions', []))}")
+            ga = prep_data.get("gap_analysis", {})
+            print(f"[prep_agent] gap_analysis keys={list(ga.keys()) if isinstance(ga, dict) else ga}")
+            for prio in ["priority_1_must_fix", "priority_2_should_fix", "priority_3_nice_to_have"]:
+                items = ga.get(prio, [])
+                if items:
+                    print(f"[prep_agent] gap_analysis.{prio} count={len(items)}")
+        except Exception as e:
+            print(f"[prep_agent] Failed to log refine result: {e}")
+
+        # ── 生成新 prep_id，不覆盖原文档 ──
+        original_prep_id = prep_id
+        new_prep_id = f"{original_prep_id}-refined-{self._now_iso().replace(':', '').replace('-', '')[:15]}"
+
+        # ── 注入 meta（与 generate 相同逻辑，额外加诊断反馈）──
+        prep_data["meta"] = {
+            "prep_id": new_prep_id,
+            "company_name": company_name,
+            "role_name": role_name,
+            "direction": direction,
+            "direction_label": direction_label,
+            "difficulty": difficulty,
+            "prep_mode": prep.get("meta", {}).get("prep_mode", "standard"),
+            "generated_at": self._now_iso(),
+            # 闭环标识
+            "diagnosis_feedback": {
+                "overall_score": diagnosis.get("overall_score"),
+                "weaknesses": weaknesses,
+                "applied_at": self._now_iso(),
+            },
+            "refined_from": original_prep_id,  # 记录来源
         }
 
-        _prep_store[prep_id] = prep
-        return prep
+        # 存储（新 prep_id，原文档不受影响）
+        _prep_store[new_prep_id] = prep_data
+        return prep_data
 
     def get_prep(self, prep_id: str) -> dict:
         """获取已存储的面试准备文档。"""
@@ -807,29 +896,443 @@ class PrepAgent:
             if old_key in data and old_key != new_key:
                 data[new_key] = data.pop(old_key)
         
-        # 补充 company_research 中缺失的字段
+        # ── 中文标题键映射：LLM 可能用中文章节标题作为 key ──
+        # 当结构化字段为空但中文标题下有数据时，从中文标题提取内容填充
+        cn_key_mappings = {
+            "一、公司与产品调研": "company_research",
+            "一、公司与产品分析": "company_research",
+            "二、JD 深度解读": "jd_analysis",
+            "二、JD深度解读": "jd_analysis",
+            "三、定制版自我介绍": "self_intro",
+            "三、自我介绍": "self_intro",
+            "四、项目深挖问答": "star_stories",
+            "四、STAR预案": "star_stories",
+            "五、高频面试问题": "predicted_questions",
+            "五、预测题目": "predicted_questions",
+            "附、Gap 清单": "gap_analysis",
+            "附录、Gap 清单": "gap_analysis",
+            "六、针对性设计/技术思考": "coaching_tips",
+            "七、反问清单": "ask_back_questions",
+        }
+        for cn_key, target_field in cn_key_mappings.items():
+            if cn_key in data:
+                cn_data = data[cn_key]
+                # 如果目标字段还是空的或只有默认值，用中文key数据填充
+                target_data = data.get(target_field)
+                should_fill = False
+                if target_field == "company_research":
+                    should_fill = not target_data or (isinstance(target_data, dict) and 
+                        not target_data.get("company_overview", "").replace("未搜索到公司信息，建议补充", "") and
+                        not target_data.get("tech_culture"))
+                elif target_field == "jd_analysis":
+                    should_fill = not target_data or (isinstance(target_data, dict) and 
+                        not target_data.get("core_intent", "").replace("未能解析JD核心意图", "").replace("JD分析完成", "") and
+                        not target_data.get("core_requirements"))
+                elif target_field == "self_intro":
+                    is_placeholder = (isinstance(target_data, str) and "请根据简历" in str(target_data)) or \
+                        (isinstance(target_data, dict) and (
+                            "请根据简历" in str(target_data.get("script", "")) or
+                            "请根据简历" in str(target_data.get("key_highlights", "")) or
+                            (not target_data.get("script") and not target_data.get("content"))
+                        ))
+                    should_fill = not target_data or is_placeholder
+                elif target_field == "predicted_questions":
+                    should_fill = not target_data or (isinstance(target_data, list) and len(target_data) == 0) or \
+                        (isinstance(target_data, dict) and not target_data)
+                elif target_field == "gap_analysis":
+                    should_fill = not target_data or (isinstance(target_data, dict) and 
+                        not target_data.get("priority_1_must_fix") and not target_data.get("priority_2_should_fix") and
+                        not target_data.get("priority_3_nice_to_have") and not target_data.get("strengths") and not target_data.get("weaknesses"))
+                elif target_field == "star_stories":
+                    should_fill = not target_data or (isinstance(target_data, list) and len(target_data) == 0)
+                elif target_field == "ask_back_questions":
+                    should_fill = not target_data or (isinstance(target_data, list) and len(target_data) == 0) or \
+                        (isinstance(target_data, dict) and not target_data)
+                elif target_field == "coaching_tips":
+                    should_fill = not target_data or (isinstance(target_data, list) and len(target_data) == 0)
+                
+                if should_fill:
+                    data[target_field] = cn_data
+                # 删除中文key，避免前端渲染混乱
+                del data[cn_key]
+        
+        # ── 深度提取：从中文结构的嵌套子字段映射到前端期望的扁平字段 ──
+        # company_research: 从 "一、公司与产品调研" 的子结构提取
+        if isinstance(data.get("company_research"), dict):
+            cr = data["company_research"]
+            # 1.1 公司背景 -> company_overview（支持 string 或 dict）
+            bg = cr.get("1.1 公司背景", cr.get("公司背景", ""))
+            if bg and (not cr.get("company_overview") or cr["company_overview"] == "未搜索到公司信息，建议补充"):
+                if isinstance(bg, str):
+                    cr["company_overview"] = bg
+                elif isinstance(bg, dict):
+                    overview_parts = []
+                    for k, v in bg.items():
+                        if k == "来源标注":
+                            continue
+                        if isinstance(v, str) and v:
+                            overview_parts.append(f"{k}：{v}")
+                        elif isinstance(v, list):
+                            overview_parts.append(f"{k}：{'、'.join(str(x) for x in v)}")
+                    if overview_parts:
+                        cr["company_overview"] = "\n".join(overview_parts)
+            # 1.4 团队文化信号 -> tech_culture（支持 string 或 dict）
+            culture = cr.get("1.4 团队文化信号", cr.get("团队文化信号", ""))
+            if culture and not cr.get("tech_culture"):
+                if isinstance(culture, str):
+                    cr["tech_culture"] = culture
+                elif isinstance(culture, dict):
+                    culture_parts = []
+                    for k, v in culture.items():
+                        if isinstance(v, str) and v:
+                            culture_parts.append(f"{k}：{v}")
+                        elif isinstance(v, list):
+                            culture_parts.append(f"{k}：{'、'.join(str(x) for x in v)}")
+                    if culture_parts:
+                        cr["tech_culture"] = "；".join(culture_parts)
+            # 1.2 产品核心特性 -> key_focus_areas（支持 string 或 dict）
+            features = cr.get("1.2 产品核心特性", cr.get("产品核心特性", ""))
+            if features and not cr.get("key_focus_areas"):
+                if isinstance(features, str):
+                    # 从字符串中提取要点（按编号分割）
+                    cr["key_focus_areas"] = [f.strip() for f in re.split(r'\d+\.\s', features) if f.strip()]
+                elif isinstance(features, dict):
+                    core = features.get("核心特性", [])
+                    if isinstance(core, list) and core:
+                        cr["key_focus_areas"] = core
+            # 1.5 面经总结 -> why_xiaohongshu_for_ai（支持 string 或 dict）
+            if not cr.get("why_xiaohongshu_for_ai"):
+                interview_summary = cr.get("1.5 面经总结", "")
+                if isinstance(interview_summary, str) and interview_summary:
+                    cr["why_xiaohongshu_for_ai"] = interview_summary
+                elif isinstance(interview_summary, dict):
+                    parts = []
+                    for k, v in interview_summary.items():
+                        if isinstance(v, str) and v:
+                            parts.append(f"{k}：{v}")
+                    if parts:
+                        cr["why_xiaohongshu_for_ai"] = "；".join(parts)
+            # 1.3 竞品格局 -> competitors（支持 string 或 dict）
+            if not cr.get("competitors"):
+                comp = cr.get("1.3 竞品格局", "")
+                if isinstance(comp, str) and comp:
+                    cr["competitors"] = comp
+                elif isinstance(comp, dict):
+                    main_comp = comp.get("主要竞品", "")
+                    if main_comp:
+                        cr["competitors"] = main_comp
+            # 清理数字前缀的子key
+            for k in list(cr.keys()):
+                if re.match(r'1\.\d', k):
+                    del cr[k]
+        
+        # jd_analysis: 从 "二、JD 深度解读" 的子结构提取
+        if isinstance(data.get("jd_analysis"), dict):
+            ja = data["jd_analysis"]
+            # 2.1 核心意图 -> core_intent（支持 string）
+            ci = ja.get("2.1 核心意图", ja.get("核心意图", ""))
+            if ci and (not ja.get("core_intent") or ja["core_intent"] in ("未能解析JD核心意图", "JD分析完成")):
+                ja["core_intent"] = str(ci)
+            # 2.2 职责白话解读 -> plain_language（支持 string 或 list）
+            pl = ja.get("2.2 职责白话解读", ja.get("职责白话解读", ""))
+            if pl and not ja.get("plain_language"):
+                if isinstance(pl, str):
+                    ja["plain_language"] = [{"original": pl, "plain": pl}]
+                elif isinstance(pl, list):
+                    ja["plain_language"] = [{"original": item, "plain": item} if isinstance(item, str) else item for item in pl]
+            # 2.3 逐条匹配分析 -> core_requirements, gap_identification, requirement_matching
+            rm = ja.get("2.3 逐条匹配分析", ja.get("逐条匹配分析", []))
+            if isinstance(rm, list) and rm:
+                if not ja.get("requirement_matching"):
+                    ja["requirement_matching"] = rm
+                if not ja.get("core_requirements"):
+                    ja["core_requirements"] = [
+                        item.get("JD要求", item.get("requirement", "")) 
+                        for item in rm if isinstance(item, dict) and item.get("匹配度", item.get("match_level", "")) in ("✅强", "strong", "✅")
+                    ]
+                if not ja.get("gap_identification"):
+                    gaps = []
+                    for item in rm:
+                        if isinstance(item, dict):
+                            gap = item.get("Gap/风险", item.get("gap", ""))
+                            if gap and gap != "-":
+                                gaps.append(gap)
+                    if gaps:
+                        ja["gap_identification"] = gaps
+            # 从 plain_language 提取 core_requirements（如果 core_requirements 为空或全空字符串）
+            cr_req = ja.get("core_requirements", [])
+            if not cr_req or all(isinstance(r, str) and not r.strip() for r in cr_req):
+                pl_items = ja.get("plain_language", [])
+                if isinstance(pl_items, list) and pl_items:
+                    extracted = []
+                    for item in pl_items:
+                        text = item.get("plain", item) if isinstance(item, dict) else str(item)
+                        # 按编号分割提取各条要求
+                        for m in re.finditer(r"\d+\.\s*['\"]?([^'\"]+)['\"]?", text):
+                            req = m.group(1).strip()
+                            if req and len(req) > 5:
+                                extracted.append(req)
+                    if extracted:
+                        ja["core_requirements"] = extracted
+                    elif isinstance(pl_items, list) and len(pl_items) > 0:
+                        # fallback：把 plain_language 文本整体作为一条
+                        first_text = pl_items[0].get("plain", pl_items[0]) if isinstance(pl_items[0], dict) else str(pl_items[0])
+                        if first_text and len(first_text) > 10:
+                            ja["core_requirements"] = [first_text]
+            # 清理数字前缀的子key
+            for k in list(ja.keys()):
+                if re.match(r'2\.\d', k) and isinstance(ja[k], (dict, list, str)):
+                    del ja[k]
+        
+        # self_intro: 从 "三、定制版自我介绍" 的 content 字段提取
+        if "self_intro" in data:
+            si = data["self_intro"]
+            if isinstance(si, dict):
+                content = si.get("content", "")
+                if content and not si.get("script"):
+                    si["script"] = content
+                    si["script_draft"] = content
+                if content and not si.get("key_highlights"):
+                    # 从内容提取关键点（按句号/换行分割）
+                    parts = [p.strip() for p in content.replace("。", "。\n").split("\n") if p.strip() and len(p.strip()) > 5]
+                    si["key_highlights"] = [p[:50] + "..." if len(p) > 50 else p for p in parts[:5]]
+                if "duration_seconds" not in si:
+                    si["duration_seconds"] = 90
+                # 清理 content key（前端不识别）
+                if "content" in si and si.get("script"):
+                    del si["content"]
+            elif isinstance(si, str) and si and "请根据简历" not in si:
+                # 字符串形式的自我介绍 -> 转为对象
+                data["self_intro"] = {
+                    "script": si,
+                    "script_draft": si,
+                    "key_highlights": [p[:50] + "..." if len(p) > 50 else p for p in si.replace("。", "。\n").split("\n") if p.strip() and len(p.strip()) > 5][:5],
+                    "duration_seconds": 90
+                }
+        
+        # predicted_questions: 从 "五、高频面试问题" 的分类子字段提取
+        if isinstance(data.get("predicted_questions"), dict):
+            pq = data["predicted_questions"]
+            # 如果是分类格式 {岗位方向专项题: [...], 技术基础类: [...], ...}
+            formatted = []
+            for cat_key, items in pq.items():
+                if isinstance(items, list):
+                    cat_name = cat_key.replace("类", "").replace("问题", "").strip()
+                    for q in items:
+                        if isinstance(q, str) and q.strip():
+                            formatted.append({
+                                "question": q.strip(),
+                                "category": cat_name,
+                                "source": "JD推导",
+                                "key_points": []
+                            })
+                        elif isinstance(q, dict):
+                            # 尝试多种可能的 question 字段名
+                            q_text = q.get("question", q.get("text", q.get("题目", q.get("q", ""))))
+                            if not q_text and any(v for k, v in q.items() if isinstance(v, str) and len(v) > 10 and k not in ("category", "source", "key_points", "difficulty")):
+                                # 用第一个长字符串字段作为 question
+                                for k, v in q.items():
+                                    if isinstance(v, str) and len(v) > 10 and k not in ("category", "source", "key_points", "difficulty"):
+                                        q_text = v
+                                        break
+                            formatted.append({
+                                "question": q_text,
+                                "category": q.get("category", cat_name),
+                                "source": q.get("source", "JD推导"),
+                                "key_points": q.get("key_points", []) if isinstance(q.get("key_points"), list) else []
+                            })
+                elif isinstance(items, str) and items.strip():
+                    # 单个字符串问题
+                    formatted.append({
+                        "question": items.strip(),
+                        "category": cat_key.replace("类", "").replace("问题", "").strip(),
+                        "source": "JD推导",
+                        "key_points": []
+                    })
+            if formatted:
+                data["predicted_questions"] = formatted
+        
+        # 过滤 predicted_questions 中 question 为空的项
+        if isinstance(data.get("predicted_questions"), list):
+            valid_qs = [q for q in data["predicted_questions"] if isinstance(q, dict) and q.get("question", "").strip()]
+            # 如果过滤后为空，但原始列表非空（说明LLM返回了空question），尝试从其他字段提取
+            if not valid_qs and data["predicted_questions"]:
+                # 尝试从 diagnosis_feedback.weaknesses 生成问题
+                meta = data.get("meta", {})
+                diag = meta.get("diagnosis_feedback", {}) if isinstance(meta, dict) else {}
+                diag_weaknesses = diag.get("weaknesses", []) if isinstance(diag, dict) else []
+                for w in diag_weaknesses:
+                    if isinstance(w, str) and w:
+                        valid_qs.append({
+                            "question": f"针对'{w}'这一薄弱项，你有什么改进计划？",
+                            "category": "诊断反馈",
+                            "source": "诊断闭环",
+                            "key_points": []
+                        })
+                # 从 gap_analysis 的 p1 提取问题
+                ga = data.get("gap_analysis", {})
+                if isinstance(ga, dict):
+                    for item in ga.get("priority_1_must_fix", []):
+                        gap_text = item.get("gap", item) if isinstance(item, dict) else str(item)
+                        if gap_text and not any(gap_text in q.get("question", "") for q in valid_qs):
+                            valid_qs.append({
+                                "question": f"请解释你对{gap_text}的理解和实践经验。",
+                                "category": "Gap补强",
+                                "source": "诊断闭环",
+                                "key_points": []
+                            })
+            data["predicted_questions"] = valid_qs
+        
+        # gap_analysis: 从 "附、Gap 清单" 的优先级子字段提取
+        if isinstance(data.get("gap_analysis"), dict):
+            ga = data["gap_analysis"]
+            # 映射中文优先级key
+            p1 = ga.get("优先级 1 — 必须补", ga.get("priority_1_must_fix", []))
+            p2 = ga.get("优先级 2 — 争取补", ga.get("priority_2_should_fix", []))
+            p3 = ga.get("优先级 3 — 了解即可", ga.get("priority_3_nice_to_have", []))
+            # 如果 p1/p2/p3 全空，但 ga 有其他内容，尝试整体提取
+            if not p1 and not p2 and not p3:
+                # 尝试从 strengths/weaknesses 格式转换
+                strengths = ga.get("strengths", ga.get("strengths_vs_jd", []))
+                weaknesses = ga.get("weaknesses", ga.get("weaknesses_vs_jd", []))
+                strategies = ga.get("mitigation_strategies", [])
+                if weaknesses:
+                    ga["priority_1_must_fix"] = [{"gap": w, "action": ""} if isinstance(w, str) else w for w in weaknesses]
+                if strengths:
+                    ga["priority_2_should_fix"] = [{"gap": s, "action": ""} if isinstance(s, str) else s for s in strengths]
+                if strategies:
+                    ga["priority_3_nice_to_have"] = [{"gap": s, "action": ""} if isinstance(s, str) else s for s in strategies]
+            else:
+                # 格式化 p1/p2/p3 为 GapItem
+                for target, items in [("priority_1_must_fix", p1), ("priority_2_should_fix", p2), ("priority_3_nice_to_have", p3)]:
+                    if items and isinstance(items, list):
+                        formatted = []
+                        for item in items:
+                            if isinstance(item, str):
+                                # 格式如 "[RAG噪声处理细节] → 补课方式：复习LangChain文档..."
+                                gap_match = re.match(r'\[(.+?)\]\s*→\s*(.+)', item)
+                                if gap_match:
+                                    formatted.append({"gap": gap_match.group(1), "action": gap_match.group(2)})
+                                else:
+                                    formatted.append({"gap": item, "action": ""})
+                            elif isinstance(item, dict):
+                                formatted.append({
+                                    "gap": item.get("gap", item.get("issue", "")),
+                                    "action": item.get("action", item.get("suggestion", ""))
+                                })
+                        ga[target] = formatted
+            # 如果 gap_analysis 全空，尝试从 jd_analysis.gap_identification 或 meta.diagnosis_feedback 提取
+            has_any_gap = ga.get("priority_1_must_fix") or ga.get("priority_2_should_fix") or ga.get("priority_3_nice_to_have")
+            if not has_any_gap:
+                # 从 jd_analysis.gap_identification 提取
+                ja_gaps = data.get("jd_analysis", {}).get("gap_identification", []) if isinstance(data.get("jd_analysis"), dict) else []
+                if ja_gaps:
+                    ga["priority_1_must_fix"] = [{"gap": g, "action": ""} if isinstance(g, str) else g for g in ja_gaps]
+                # 从 meta.diagnosis_feedback.weaknesses 提取
+                meta = data.get("meta", {})
+                diag = meta.get("diagnosis_feedback", {}) if isinstance(meta, dict) else {}
+                diag_weaknesses = diag.get("weaknesses", []) if isinstance(diag, dict) else []
+                if diag_weaknesses and not ga.get("priority_1_must_fix"):
+                    ga["priority_1_must_fix"] = [{"gap": w, "action": ""} for w in diag_weaknesses if isinstance(w, str)]
+            # 确保 strengths_vs_jd 和 weaknesses_vs_jd 字段存在（前端类型要求）
+            if not ga.get("strengths_vs_jd"):
+                p2_items = ga.get("priority_2_should_fix", [])
+                ga["strengths_vs_jd"] = [item["gap"] if isinstance(item, dict) else item for item in p2_items]
+            if not ga.get("weaknesses_vs_jd"):
+                p1_items = ga.get("priority_1_must_fix", [])
+                ga["weaknesses_vs_jd"] = [item["gap"] if isinstance(item, dict) else item for item in p1_items]
+            # 清理中文优先级key
+            for k in list(ga.keys()):
+                if "优先级" in k or "— " in k:
+                    del ga[k]
+        
+        # ask_back_questions: 确保是字符串数组
+        if isinstance(data.get("ask_back_questions"), dict):
+            abq = data["ask_back_questions"]
+            flat = []
+            for v in abq.values():
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, str):
+                            flat.append(item)
+                        elif isinstance(item, dict):
+                            flat.append(item.get("question", item.get("text", "")))
+                elif isinstance(v, str):
+                    flat.append(v)
+            data["ask_back_questions"] = flat
+        
+        # star_stories: 补充空 project_name，清理 ask_back_questions 中的序号前缀
+        if isinstance(data.get("star_stories"), list):
+            for story in data["star_stories"]:
+                if isinstance(story, dict) and not story.get("project_name"):
+                    # 从所有文本字段中提取引号内的项目名
+                    all_text = " ".join([
+                        story.get("situation", ""),
+                        story.get("task", ""),
+                        story.get("action", ""),
+                        story.get("result", "")
+                    ])
+                    # 提取引号内的项目名，如 'AI面试教练'、'舞房预约系统'
+                    name_match = re.search(r"['\u2018\u2019\"\u201c\u201d](.+?)['\u2018\u2019\"\u201c\u201d]", all_text)
+                    if name_match:
+                        story["project_name"] = name_match.group(1)
+                    elif story.get("task"):
+                        # 从 task 提取核心动词短语作为项目名
+                        task = story["task"]
+                        # 截取第一个句号前的内容
+                        first_sentence = task.split("。")[0].split("，")[0]
+                        story["project_name"] = first_sentence[:25] + "..." if len(first_sentence) > 25 else first_sentence
+                    elif story.get("situation"):
+                        story["project_name"] = story["situation"][:25] + "..." if len(story["situation"]) > 25 else story["situation"]
+        
+        # ask_back_questions: 清理 "1. " "Q1." 等序号前缀
+        if isinstance(data.get("ask_back_questions"), list):
+            cleaned = []
+            for q in data["ask_back_questions"]:
+                if isinstance(q, str):
+                    q_clean = re.sub(r'^\s*Q?\d+[\.\)、\]]\s*', '', q).strip()
+                    if q_clean:
+                        cleaned.append(q_clean)
+                else:
+                    cleaned.append(q)
+            data["ask_back_questions"] = cleaned
+        
+        # 补充 company_research 中缺失的字段（与前端字段名对齐）
         if "company_research" in data and isinstance(data["company_research"], dict):
+            # 字段名归一化：LLM可能用 overview/产品特性 等，统一为前端期望的字段名
+            cr = data["company_research"]
+            if "overview" in cr and "company_overview" not in cr:
+                cr["company_overview"] = cr.pop("overview")
+            if "product_features" in cr and "key_focus_areas" not in cr:
+                cr["key_focus_areas"] = cr.pop("product_features") if isinstance(cr.get("product_features"), list) else [cr.pop("product_features")]
+            if "culture_signals" in cr and "tech_culture" not in cr:
+                cr["tech_culture"] = cr.pop("culture_signals")
+            if "ai_strategy" in cr and "why_xiaohongshu_for_ai" not in cr:
+                cr["why_xiaohongshu_for_ai"] = cr.pop("ai_strategy")
             company_defaults = {
-                "overview": "未搜索到公司信息，建议补充",
-                "product_features": "",
-                "competitors": "",
-                "ai_strategy": "",
+                "company_overview": "未搜索到公司信息，建议补充",
+                "tech_culture": "",
+                "key_focus_areas": [],
+                "why_xiaohongshu_for_ai": "",
                 "recent_news": "",
-                "culture_signals": "",
+                "competitors": "",
                 "sources": []
             }
             for key, default in company_defaults.items():
-                if key not in data["company_research"]:
-                    data["company_research"][key] = default
+                if key not in cr:
+                    cr[key] = default
         
         defaults = {
-            "company_research": {"overview": "未搜索到公司信息，建议补充",
-                                 "product_features": "", "competitors": "",
-                                 "ai_strategy": "", "recent_news": "", "culture_signals": "",
-                                 "sources": []},
+            "company_research": {"company_overview": "未搜索到公司信息，建议补充",
+                                 "tech_culture": "", "key_focus_areas": [],
+                                 "why_xiaohongshu_for_ai": "", "recent_news": "",
+                                 "competitors": "", "sources": []},
             "jd_analysis": {"core_intent": "未能解析JD核心意图",
                             "plain_language": [],
-                            "requirement_matching": []},
+                            "requirement_matching": [],
+                            "core_requirements": [],
+                            "preferred_qualifications": [],
+                            "gap_identification": []},
             "self_intro": "（请根据简历和JD生成个性化自我介绍，≤250字）",
             "star_stories": [],
             "predicted_questions": [],
@@ -845,10 +1348,14 @@ class PrepAgent:
         if "jd_analysis" in data:
             jd_data = data["jd_analysis"]
             if isinstance(jd_data, list):
+                # LLM 返回列表，包装为前端期望的结构
                 data["jd_analysis"] = {
                     "core_intent": "JD分析完成",
                     "plain_language": [],
-                    "requirement_matching": jd_data
+                    "requirement_matching": jd_data,
+                    "core_requirements": [item.get("requirement", str(item)) if isinstance(item, dict) else str(item) for item in jd_data],
+                    "preferred_qualifications": [],
+                    "gap_identification": [item.get("gap", "") for item in jd_data if isinstance(item, dict) and item.get("gap")] if all(isinstance(item, dict) for item in jd_data) else [],
                 }
             elif isinstance(jd_data, dict):
                 # 处理带编号的字段名（如 2.1_core_intent）
@@ -884,10 +1391,17 @@ class PrepAgent:
                             "plain": item
                         })
                 
+                # 同时保留前端期望的字段（如果 LLM 已返回则直接用）
                 data["jd_analysis"] = {
                     "core_intent": core_intent if core_intent else "JD分析完成",
                     "plain_language": formatted_plain_language,
-                    "requirement_matching": requirement_matching
+                    "requirement_matching": requirement_matching,
+                    # 前端渲染字段：优先用 LLM 原始返回，否则从 requirement_matching 提取
+                    "core_requirements": jd_data.get("core_requirements",
+                        [rm.get("requirement", "") for rm in requirement_matching if rm.get("requirement")] if requirement_matching else []),
+                    "preferred_qualifications": jd_data.get("preferred_qualifications", []),
+                    "gap_identification": jd_data.get("gap_identification",
+                        [rm.get("gap", "") for rm in requirement_matching if rm.get("gap")] if requirement_matching else []),
                 }
         
         # 统一格式化 requirement_matching
@@ -895,10 +1409,6 @@ class PrepAgent:
             data["jd_analysis"]["requirement_matching"] = self._format_requirement_matching(
                 data["jd_analysis"]["requirement_matching"]
             )
-        
-        # 处理 self_intro 字段格式转换
-        if "self_intro" in data and isinstance(data["self_intro"], dict):
-            data["self_intro"] = data["self_intro"].get("content", "")
         
         # 处理 predicted_questions 字段格式转换
         if "predicted_questions" in data:
@@ -1045,6 +1555,91 @@ class PrepAgent:
         for key, default in defaults.items():
             if key not in data or not data[key]:
                 data[key] = default
+        
+        # ── 前端字段映射：确保后端返回的字段名与前端期望一致 ──
+        
+        # company_research 字段映射
+        if "company_research" in data and isinstance(data["company_research"], dict):
+            cr = data["company_research"]
+            # 映射 overview -> company_overview
+            if "overview" in cr and "company_overview" not in cr:
+                cr["company_overview"] = cr["overview"]
+            # 映射 culture_values -> tech_culture
+            if "culture_values" in cr and "tech_culture" not in cr:
+                cr["tech_culture"] = cr["culture_values"]
+            # 映射 culture_signals -> tech_culture (兼容旧字段名)
+            if "culture_signals" in cr and "tech_culture" not in cr:
+                cr["tech_culture"] = cr["culture_signals"]
+            # 映射 tech_focus -> key_focus_areas (字符串转数组)
+            if "tech_focus" in cr and "key_focus_areas" not in cr:
+                if isinstance(cr["tech_focus"], str):
+                    cr["key_focus_areas"] = [cr["tech_focus"]]
+                elif isinstance(cr["tech_focus"], list):
+                    cr["key_focus_areas"] = cr["tech_focus"]
+            # 映射 interview_style -> why_xiaohongshu_for_ai
+            if "interview_style" in cr and "why_xiaohongshu_for_ai" not in cr:
+                cr["why_xiaohongshu_for_ai"] = cr["interview_style"]
+            # 确保 key_focus_areas 和 why_xiaohongshu_for_ai 存在
+            if "key_focus_areas" not in cr:
+                cr["key_focus_areas"] = []
+            if "why_xiaohongshu_for_ai" not in cr:
+                cr["why_xiaohongshu_for_ai"] = ""
+        
+        # jd_analysis 字段映射
+        if "jd_analysis" in data and isinstance(data["jd_analysis"], dict):
+            ja = data["jd_analysis"]
+            # 映射 key_differentiators -> preferred_qualifications
+            if "key_differentiators" in ja and "preferred_qualifications" not in ja:
+                ja["preferred_qualifications"] = ja["key_differentiators"] if isinstance(ja["key_differentiators"], list) else [ja["key_differentiators"]]
+            # 将 requirement_matching 转换为前端期望的格式
+            if "requirement_matching" in ja:
+                rm = ja["requirement_matching"]
+                if isinstance(rm, list):
+                    # core_requirements: 匹配成功的要求
+                    if "core_requirements" not in ja or not ja["core_requirements"]:
+                        ja["core_requirements"] = [
+                            item.get("requirement", item.get("original", "")) 
+                            for item in rm if item.get("match_score", 100) >= 60
+                        ]
+                    # gap_identification: 匹配度低的要求（差距）
+                    if "gap_identification" not in ja or not ja["gap_identification"]:
+                        ja["gap_identification"] = [
+                            f"{item.get('requirement', '')} - {item.get('gap', '差距较大')}" 
+                            for item in rm if item.get("match_score", 100) < 60
+                        ]
+            # 确保 preferred_qualifications 存在
+            if "preferred_qualifications" not in ja:
+                ja["preferred_qualifications"] = []
+            # 确保 gap_identification 存在
+            if "gap_identification" not in ja:
+                ja["gap_identification"] = []
+        
+        # self_intro 字段映射：从字符串转换为对象格式，或补齐缺失字段
+        if "self_intro" in data:
+            if isinstance(data["self_intro"], str):
+                intro_text = data["self_intro"]
+                # 尝试从文本中提取关键点
+                highlights = []
+                # 简单地按换行或分号分割
+                parts = [p.strip() for p in intro_text.split('\n') if p.strip()]
+                for part in parts[:5]:
+                    if len(part) > 10:
+                        highlights.append(part[:50] + "..." if len(part) > 50 else part)
+                data["self_intro"] = {
+                    "key_highlights": highlights,
+                    "script": intro_text,
+                    "duration_seconds": 90
+                }
+            elif isinstance(data["self_intro"], dict):
+                # 已经是对象，补齐缺失字段
+                si = data["self_intro"]
+                if "key_highlights" not in si:
+                    si["key_highlights"] = []
+                if "script" not in si:
+                    si["script"] = ""
+                if "duration_seconds" not in si:
+                    si["duration_seconds"] = 90
+        
         return data
 
 

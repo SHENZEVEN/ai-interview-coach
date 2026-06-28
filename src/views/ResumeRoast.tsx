@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { v4 as uuidv4 } from 'uuid';
 import { useLocation, useNavigate } from 'react-router';
 import { parseDocument } from '../utils/documentParser';
 import { startAgentInterview, submitAgentAnswer, fetchDiagnosis, keepSessionAlive, SessionNotFoundError } from '../services/diagnosisService';
@@ -9,30 +10,23 @@ import { saveDiagnosis as saveDiagnosisToStorage, getDiagnoses, deleteDiagnosis,
 import { saveHistoryRecord } from '../utils/storage';
 import type { AgentQuestion, CognitiveDiagnosis } from '../services/diagnosisService';
 import {
-  exportDiagnosisToWord,
-  exportDiagnosisToJSON,
   DIFFICULTY_CONFIG,
   AnswerRecord,
   DifficultyLevel,
 } from '../services/resumeRoastService';
-import { RadarChart, Timeline, ScoreBox } from './Diagnosis';
 import QuickPractice from './QuickPractice';
+import ReportStage from './roast/ReportStage';
+import ImportConfirmDialog from './roast/ImportConfirmDialog';
+import ViewPrepModal from './roast/ViewPrepModal';
+import ViewDiagnosisModal from './roast/ViewDiagnosisModal';
 import '../styles/ResumeRoast.css';
 
 type RoastMode = 'light' | 'agent' | 'prep';
 
 // ── 常量 ──
-const MAX_QUESTIONS = 15;    // 硬上限
-const TARGET_QUESTIONS = 8;  // 目标题数（进度条基准）
-const CYAN = '#00f0ff';
-const MAGENTA = '#ff00ff';
-const GREEN = '#22ff22';
-const YELLOW = '#ffff00';
-const RED = '#ff4444';
-const DIM = '#555';
-const BG = '#0a0a0a';
-const CARD = '#111';
-const BORDER = '#222';
+import { CYAN, MAGENTA, GREEN, YELLOW, RED, DIM, BG, CARD, BORDER } from '../theme/colors';
+const MIN_QUESTIONS = 6;   // 最少题数
+const MAX_QUESTIONS = 10;  // 最多题数
 
 type Stage = 'upload' | 'analyzing' | 'interviewing' | 'reporting';
 
@@ -98,6 +92,7 @@ const ResumeRoast = () => {
     firstQuestion?: AgentQuestion;
     prepContextUsed?: string[];
     isPrepDriven?: boolean;
+    mode?: string;
   } | null;
 
   // ── 状态 ──
@@ -152,18 +147,30 @@ const ResumeRoast = () => {
       try {
         const parsed = JSON.parse(savedState);
         if (parsed.stage === 'interviewing' && parsed.sessionId && parsed.currentQuestion) {
-          setStage('interviewing');
-          setSessionId(parsed.sessionId);
-          setCurrentQuestion(parsed.currentQuestion);
-          setCurrentAnswer(parsed.currentAnswer || '');
-          setAnswers(parsed.answers || []);
-          setQuestionCount(parsed.questionCount || 1);
-          setPrepId(parsed.prepId || null);
-          setIsPrepDriven(parsed.isPrepDriven || false);
-          setRoastMode(parsed.roastMode || 'agent');
-          setResumeText(parsed.resumeText || '');
-          setJdText(parsed.jdText || '');
-          localStorage.removeItem('resume-roast-state');
+          // 验证后端 session 是否仍然有效
+          keepSessionAlive(parsed.sessionId).then((res) => {
+            if (res.success) {
+              setStage('interviewing');
+              setSessionId(parsed.sessionId);
+              setCurrentQuestion(parsed.currentQuestion);
+              setCurrentAnswer(parsed.currentAnswer || '');
+              setAnswers(parsed.answers || []);
+              setQuestionCount(parsed.questionCount || 1);
+              setPrepId(parsed.prepId || null);
+              setIsPrepDriven(parsed.isPrepDriven || false);
+              setRoastMode(parsed.roastMode || 'agent');
+              setResumeText(parsed.resumeText || '');
+              setJdText(parsed.jdText || '');
+            } else {
+              // session 已过期，清除旧状态
+              console.warn('面试会话已过期，清除旧状态');
+            }
+            localStorage.removeItem('resume-roast-state');
+          }).catch(() => {
+            // keep-alive 失败，session 不存在
+            console.warn('面试会话已失效，清除旧状态');
+            localStorage.removeItem('resume-roast-state');
+          });
           return; // 跳过默认的 prepState 处理
         }
       } catch (e) {
@@ -173,41 +180,52 @@ const ResumeRoast = () => {
 
     // ── 处理 Prep 上下文 ──
     if (prepState?.sessionId && prepState?.firstQuestion) {
-      // 确保状态完全重置后再设置新状态
-      setSessionId(null);
-      setCurrentQuestion(null);
-      setQuestionCount(0);
+      // 直接进入面试（有 sessionId 和 firstQuestion）
+      setSessionId(prepState.sessionId ?? null);
+      setCurrentQuestion(prepState.firstQuestion ?? null);
+      setPrepId(prepState.prepId || null);
+      setIsPrepDriven(prepState.isPrepDriven || true);
+      setRoastMode('prep');
+      setQuestionCount(1);
       setAnswers([]);
       setCurrentAnswer('');
       setDiagnosis(null);
-      
-      // 使用 setTimeout 确保状态重置完成
-      setTimeout(() => {
-        setSessionId(prepState.sessionId ?? null);
-        setCurrentQuestion(prepState.firstQuestion ?? null);
-        setPrepId(prepState.prepId || null);
-        setIsPrepDriven(prepState.isPrepDriven || true);
-        setRoastMode('prep');
-        setQuestionCount(1);
-        setStage('interviewing');
-        // 保存面试状态到 localStorage
-        localStorage.setItem('resume-roast-state', JSON.stringify({
-          stage: 'interviewing',
-          sessionId: prepState.sessionId ?? null,
-          currentQuestion: prepState.firstQuestion ?? null,
-          currentAnswer: '',
-          answers: [],
-          questionCount: 1,
-          prepId: prepState.prepId || null,
-          isPrepDriven: prepState.isPrepDriven || true,
-          roastMode: 'prep',
-          resumeText: '',
-          jdText: '',
-          timestamp: Date.now(),
-        }));
-        // 清除 location state 避免重复触发
-        window.history.replaceState({}, document.title);
-      }, 50);
+      setStage('interviewing');
+      localStorage.setItem('resume-roast-state', JSON.stringify({
+        stage: 'interviewing',
+        sessionId: prepState.sessionId ?? null,
+        currentQuestion: prepState.firstQuestion ?? null,
+        currentAnswer: '',
+        answers: [],
+        questionCount: 1,
+        prepId: prepState.prepId || null,
+        isPrepDriven: prepState.isPrepDriven || true,
+        roastMode: 'prep',
+        resumeText: '',
+        jdText: '',
+        timestamp: Date.now(),
+      }));
+      window.history.replaceState({}, document.title);
+    } else if (prepState?.mode === 'prep-select' && prepState?.prepId) {
+      // 进入准备驱动模式选择页面（不直接开始面试）
+      // 从 localStorage 读取准备文档数据
+      const savedPrepData = localStorage.getItem('prep-document-for-roast');
+      if (savedPrepData) {
+        try {
+          const parsed = JSON.parse(savedPrepData);
+          setPrepId(parsed.prepId || prepState.prepId);
+          setIsPrepDriven(true);
+          setRoastMode('prep');
+          if (parsed.resumeText) {
+            setResumeText(parsed.resumeText);
+          }
+          // 自动进入表单模式（已有准备文档，只需选择简历）
+          setPrepImportStage('form');
+        } catch (e) {
+          console.error('读取准备文档数据失败:', e);
+        }
+      }
+      window.history.replaceState({}, document.title);
     }
   }, [prepState?.sessionId, prepState?.firstQuestion]);
 
@@ -252,8 +270,8 @@ const ResumeRoast = () => {
       const result = await startFromPrep({
         prep_id: prep.meta.prep_id,
         resume_text: effectiveResume,
-        prep_data: prep as unknown as Record<string, unknown>,
-      } as any);
+        prep_data: prep,
+      });
 
       setSessionId(result.session_id);
       setCurrentQuestion(result.first_question);
@@ -526,7 +544,7 @@ const ResumeRoast = () => {
   const handleSaveDiagnosis = () => {
     if (!diagnosis) return;
     try {
-      saveDiagnosisToStorage({
+      const { trimmed } = saveDiagnosisToStorage({
         prepId: prepId || undefined,
         sessionId: sessionId || undefined,
         isPrepDriven,
@@ -534,13 +552,17 @@ const ResumeRoast = () => {
         questionCount: answers.length,
         diagnosis,
         answers: answers.map(a => ({
+          questionId: a.questionId,
           questionText: a.questionText,
           answer: a.answer,
           evaluation: a.evaluation,
         })),
       });
       setSavedDiagnoses(getDiagnoses());
-      showToast('✅ 诊断报告已保存（可在准备驱动页查看）', 'success');
+      const msg = trimmed
+        ? '✅ 诊断报告已保存（旧报告已达上限，最早的已被移除）'
+        : '✅ 诊断报告已保存（可在准备驱动页查看）';
+      showToast(msg, 'success');
     } catch {
       showToast('❌ 保存失败', 'error');
     }
@@ -688,13 +710,47 @@ const ResumeRoast = () => {
       {stage === 'upload' && roastMode === 'agent' && (
         <div className="stage-card upload-stage">
           <h2>第一步：上传简历</h2>
-          <p className="stage-hint">支持 PDF、Word 和图片格式</p>
+          <p className="stage-hint">支持 PDF、DOCX、图片、TXT、MD 格式</p>
           <div className={`upload-area ${isDraggingResume ? 'dragover' : ''}`}
             onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
             <textarea className="resume-input" value={resumeText}
               onChange={e => setResumeText(e.target.value)}
               placeholder="粘贴简历内容到此处，或直接拖拽简历文件到此处..." disabled={isLoading} />
             {isDraggingResume && <div className="drop-overlay"><span className="drop-icon">📄</span><span className="drop-text">松开上传简历</span></div>}
+          </div>
+          {/* 文件上传区域 */}
+          <div
+            onDragOver={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingResume(true); }}
+            onDragLeave={e => {
+              e.preventDefault(); e.stopPropagation();
+              const rect = e.currentTarget.getBoundingClientRect();
+              const { clientX, clientY } = e;
+              if (clientX <= rect.left || clientX >= rect.right || clientY <= rect.top || clientY >= rect.bottom) {
+                setIsDraggingResume(false);
+              }
+            }}
+            onDrop={e => {
+              e.preventDefault(); e.stopPropagation(); setIsDraggingResume(false);
+              const file = e.dataTransfer.files?.[0];
+              if (file) processFile(file);
+            }}
+            style={{
+              border: `1px dashed ${isDraggingResume ? CYAN : BORDER}`,
+              borderRadius: 8, padding: 12, textAlign: 'center', marginTop: 8, marginBottom: 8,
+              color: DIM, fontSize: 12, cursor: 'pointer',
+              background: isDraggingResume ? 'rgba(0,240,255,0.05)' : 'transparent',
+              transition: 'border-color 0.2s',
+            }}
+            onClick={() => document.getElementById('resumeFileInputAgent')?.click()}
+          >
+            📎 拖拽简历文件（PDF/DOCX/图片/TXT/MD）或点击上传
+            <input
+              id="resumeFileInputAgent"
+              type="file"
+              accept=".pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp,.txt,.md"
+              hidden
+              onChange={handleFileUpload}
+            />
           </div>
 
           {/* JD 导入区域 */}
@@ -777,7 +833,7 @@ const ResumeRoast = () => {
 
           <div className="upload-actions">
             <label className="upload-btn">
-              <input type="file" accept=".pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp"
+              <input type="file" accept=".pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp,.txt,.md"
                 onChange={handleFileUpload} disabled={isLoading} />
               📎 选择文件
             </label>
@@ -883,7 +939,7 @@ const ResumeRoast = () => {
                             <div style={{ fontSize: 11, color: DIM, marginTop: 2 }}>
                               {prep.meta.direction === 'E' ? 'AI产品' : 'AI全栈开发'} · {prep.meta.difficulty}
                               <span style={{ margin: '0 6px', color: BORDER }}>|</span>
-                              保存于 {new Date(prep.savedAt).toLocaleDateString('zh-CN')}
+                              保存于 {new Date(prep.savedAt).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                             </div>
                           </div>
                           <div style={{ display: 'flex', gap: 6 }}>
@@ -953,7 +1009,7 @@ const ResumeRoast = () => {
                             🧠 总分 {d.diagnosis.overall_score} · {d.questionCount}题
                           </span>
                           <span style={{ color: DIM, marginLeft: 8 }}>
-                            {d.isPrepDriven ? '🎯准备驱动' : '🤖Agent'} · {new Date(d.savedAt).toLocaleDateString('zh-CN')}
+                            {d.isPrepDriven ? '🎯准备驱动' : '🤖Agent'} · {new Date(d.savedAt).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
                           </span>
                         </div>
                         <div style={{ display: 'flex', gap: 4 }}>
@@ -1024,76 +1080,108 @@ const ResumeRoast = () => {
                 <label style={{ fontSize: 13, fontWeight: 600, display: 'block', marginBottom: 8, color: CYAN }}>
                   Step 1 — 导入面试准备文档 <span style={{ fontSize: 11, color: DIM, fontWeight: 400 }}>（必填）</span>
                 </label>
-                <div
-                  onDragOver={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingDoc(true); }}
-                  onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingDoc(false); }}
-                  onDrop={e => {
-                    e.preventDefault(); e.stopPropagation(); setIsDraggingDoc(false);
-                    const file = e.dataTransfer.files?.[0];
-                    if (file) handleExternalDocFile(file);
-                  }}
-                  style={{
-                    border: `1px dashed ${isDraggingDoc ? CYAN : externalDocText ? GREEN : BORDER}`,
-                    borderRadius: 10, padding: 18, textAlign: 'center', marginBottom: 8,
-                    background: externalDocText ? 'rgba(34,255,34,0.04)' : 'transparent',
-                    cursor: 'pointer', transition: 'border-color 0.2s',
-                  }}
-                  onClick={() => document.getElementById('prepDocInput')?.click()}
-                >
-                  {externalDocText ? (
-                    <div>
-                      <span style={{ fontSize: 20 }}>✅</span>
-                      <div style={{ color: GREEN, fontSize: 12, marginTop: 4 }}>
-                        已加载：{externalDocFileName || '粘贴文本'}（{externalDocText.length.toLocaleString()} 字符）
-                      </div>
-                      <div style={{ color: DIM, fontSize: 10, marginTop: 2 }}>点击重新上传</div>
-                    </div>
-                  ) : (
-                    <div>
-                      <span style={{ fontSize: 24 }}>📄</span>
-                      <div style={{ color: DIM, fontSize: 12, marginTop: 4 }}>
-                        拖拽 .json / .md / .markdown / .txt 到此处，或点击上传
-                      </div>
-                    </div>
-                  )}
-                  <input
-                    id="prepDocInput"
-                    type="file"
-                    accept=".json,.md,.markdown,.txt"
-                    hidden
-                    onChange={e => {
-                      const file = e.target.files?.[0];
-                      e.target.value = ''; // 允许重新上传同名文件
-                      if (file) handleExternalDocFile(file);
-                    }}
-                  />
-                </div>
-                {/* 也支持直接粘贴 */}
-                <textarea
-                  value={externalDocText}
-                  onChange={e => {
-                    setExternalDocText(e.target.value);
-                    if (e.target.value.trim()) setExternalDocFileName('粘贴文本');
-                    else setExternalDocFileName('');
-                  }}
-                  placeholder="或者直接粘贴文档内容到此处（支持 JSON / Markdown / 纯文本）..."
-                  rows={3}
-                  style={{
-                    width: '100%', background: CARD, border: `1px solid ${BORDER}`,
-                    color: '#fff', padding: 10, borderRadius: 8, fontSize: 12, resize: 'vertical',
-                    fontFamily: 'monospace', boxSizing: 'border-box',
-                  }}
-                />
-                {/* 解析摘要反馈 */}
-                {parsedSummary && (
+                
+                {/* 如果已有准备文档（从 InterviewPrep 跳转过来），显示已选择的文档 */}
+                {prepId && !externalDocText.trim() && (
                   <div style={{
-                    marginTop: 8, padding: 10, background: 'rgba(0,240,255,0.04)',
-                    border: `1px solid ${CYAN}30`, borderRadius: 6, fontSize: 11, color: '#ccc',
-                    lineHeight: 1.6,
+                    padding: '12px 16px', background: 'rgba(34,255,34,0.04)',
+                    border: `1px solid ${GREEN}`, borderRadius: 8, marginBottom: 8,
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                   }}>
-                    <div style={{ color: CYAN, fontWeight: 600, marginBottom: 4 }}>📊 解析摘要</div>
-                    {parsedSummary}
+                    <div>
+                      <div style={{ color: GREEN, fontSize: 13, fontWeight: 600 }}>✅ 已选择面试准备文档</div>
+                      <div style={{ color: DIM, fontSize: 11, marginTop: 2 }}>
+                        从面试准备页面跳转，文档已就绪
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setPrepId(null);
+                        setIsPrepDriven(false);
+                        setRoastMode('prep');
+                      }}
+                      style={{ padding: '4px 10px', background: 'transparent', border: `1px solid ${RED}`, borderRadius: 4, fontSize: 11, color: RED, cursor: 'pointer' }}
+                    >
+                      更换文档
+                    </button>
                   </div>
+                )}
+                
+                {/* 文档上传区域（仅在没有 prepId 或已选择更换时显示） */}
+                {!prepId && (
+                  <>
+                    <div
+                      onDragOver={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingDoc(true); }}
+                      onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingDoc(false); }}
+                      onDrop={e => {
+                        e.preventDefault(); e.stopPropagation(); setIsDraggingDoc(false);
+                        const file = e.dataTransfer.files?.[0];
+                        if (file) handleExternalDocFile(file);
+                      }}
+                      style={{
+                        border: `1px dashed ${isDraggingDoc ? CYAN : externalDocText ? GREEN : BORDER}`,
+                        borderRadius: 10, padding: 18, textAlign: 'center', marginBottom: 8,
+                        background: externalDocText ? 'rgba(34,255,34,0.04)' : 'transparent',
+                        cursor: 'pointer', transition: 'border-color 0.2s',
+                      }}
+                      onClick={() => document.getElementById('prepDocInput')?.click()}
+                    >
+                      {externalDocText ? (
+                        <div>
+                          <span style={{ fontSize: 20 }}>✅</span>
+                          <div style={{ color: GREEN, fontSize: 12, marginTop: 4 }}>
+                            已加载：{externalDocFileName || '粘贴文本'}（{externalDocText.length.toLocaleString()} 字符）
+                          </div>
+                          <div style={{ color: DIM, fontSize: 10, marginTop: 2 }}>点击重新上传</div>
+                        </div>
+                      ) : (
+                        <div>
+                          <span style={{ fontSize: 24 }}>📄</span>
+                          <div style={{ color: DIM, fontSize: 12, marginTop: 4 }}>
+                            拖拽 .json / .md / .markdown / .txt 到此处，或点击上传
+                          </div>
+                        </div>
+                      )}
+                      <input
+                        id="prepDocInput"
+                        type="file"
+                        accept=".json,.md,.markdown,.txt"
+                        hidden
+                        onChange={e => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (file) handleExternalDocFile(file);
+                        }}
+                      />
+                    </div>
+                    {/* 也支持直接粘贴 */}
+                    <textarea
+                      value={externalDocText}
+                      onChange={e => {
+                        setExternalDocText(e.target.value);
+                        if (e.target.value.trim()) setExternalDocFileName('粘贴文本');
+                        else setExternalDocFileName('');
+                      }}
+                      placeholder="或者直接粘贴文档内容到此处（支持 JSON / Markdown / 纯文本）..."
+                      rows={3}
+                      style={{
+                        width: '100%', background: CARD, border: `1px solid ${BORDER}`,
+                        color: '#fff', padding: 10, borderRadius: 8, fontSize: 12, resize: 'vertical',
+                        fontFamily: 'monospace', boxSizing: 'border-box',
+                      }}
+                    />
+                    {/* 解析摘要反馈 */}
+                    {parsedSummary && (
+                      <div style={{
+                        marginTop: 8, padding: 10, background: 'rgba(0,240,255,0.04)',
+                        border: `1px solid ${CYAN}30`, borderRadius: 6, fontSize: 11, color: '#ccc',
+                        lineHeight: 1.6,
+                      }}>
+                        <div style={{ color: CYAN, fontWeight: 600, marginBottom: 4 }}>📊 解析摘要</div>
+                        {parsedSummary}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -1182,19 +1270,97 @@ const ResumeRoast = () => {
               )}
 
               {/* 提交 */}
-              <button
-                onClick={handleStartFromExternalDoc}
-                disabled={isImportingDoc || !externalDocText.trim()}
-                style={{
-                  width: '100%', padding: '14px 0',
-                  background: (externalDocText.trim() && !isImportingDoc) ? CYAN : DIM,
-                  color: externalDocText.trim() ? '#000' : '#666',
-                  border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700,
-                  cursor: externalDocText.trim() ? 'pointer' : 'not-allowed',
-                }}
-              >
-                {isImportingDoc ? '⏳ 解析文档并启动面试...' : '🚀 导入文档并开始面试'}
-              </button>
+              {prepId ? (
+                // 已有准备文档（从 InterviewPrep 跳转），直接开始面试
+                <button
+                  onClick={async () => {
+                    // 从 localStorage 读取完整的准备文档数据
+                    const savedPrepData = localStorage.getItem('prep-document-for-roast');
+                    if (!savedPrepData) {
+                      showToast('❌ 未找到准备文档数据，请返回面试准备页面重新生成', 'error');
+                      return;
+                    }
+                    
+                    try {
+                      const parsed = JSON.parse(savedPrepData);
+                      const prepData = parsed.prepData;
+                      if (!prepData) {
+                        showToast('❌ 准备文档数据格式错误', 'error');
+                        return;
+                      }
+                      
+                      setIsLoading(true);
+                      // 直接调用 startFromPrep API
+                      const result = await startFromPrep({
+                        prep_id: prepData.meta.prep_id,
+                        resume_text: resumeText.trim() || parsed.resumeText || '',
+                        prep_data: prepData,
+                      });
+                      
+                      setSessionId(result.session_id);
+                      setCurrentQuestion(result.first_question);
+                      setIsPrepDriven(true);
+                      setQuestionCount(1);
+                      setAnswers([]);
+                      setCurrentAnswer('');
+                      setDiagnosis(null);
+                      if (resumeText.trim()) {
+                        setResumeText(resumeText.trim());
+                      }
+                      
+                      await delay(400);
+                      setStage('interviewing');
+                      
+                      // 保存面试状态
+                      localStorage.setItem('resume-roast-state', JSON.stringify({
+                        stage: 'interviewing',
+                        sessionId: result.session_id,
+                        currentQuestion: result.first_question,
+                        currentAnswer: '',
+                        answers: [],
+                        questionCount: 1,
+                        prepId: prepData.meta.prep_id,
+                        isPrepDriven: true,
+                        roastMode: 'prep',
+                        resumeText: resumeText.trim() || parsed.resumeText || '',
+                        jdText: '',
+                        timestamp: Date.now(),
+                      }));
+                      
+                      showToast('✅ 面试已启动', 'success');
+                    } catch (e) {
+                      showToast(`❌ 启动失败: ${e instanceof Error ? e.message : '未知错误'}`, 'error');
+                    } finally {
+                      setIsLoading(false);
+                    }
+                  }}
+                  disabled={isLoading}
+                  style={{
+                    width: '100%', padding: '14px 0',
+                    background: isLoading ? DIM : CYAN,
+                    color: isLoading ? '#666' : '#000',
+                    border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                    cursor: isLoading ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {isLoading ? '⏳ 启动面试...' : '🚀 开始准备驱动面试'}
+                </button>
+              ) : (
+                // 普通外部文档导入流程
+                <button
+                  onClick={handleStartFromExternalDoc}
+                  disabled={isImportingDoc || !externalDocText.trim()}
+                  style={{
+                    width: '100%', padding: '14px 0',
+                    background: (externalDocText.trim() && !isImportingDoc) ? CYAN : DIM,
+                    color: externalDocText.trim() ? '#000' : '#666',
+                    border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700,
+                    cursor: externalDocText.trim() ? 'pointer' : 'not-allowed',
+                  }}
+                >
+                  {isImportingDoc ? '⏳ 解析文档并启动面试...' : '🚀 导入文档并开始面试'}
+                </button>
+              )}
             </div>
           ) : null}
         </div>
@@ -1210,7 +1376,7 @@ const ResumeRoast = () => {
         <div className="stage-card interview-stage">
           <div className="interview-progress" style={{ textAlign: 'center' }}>
             <span style={{ color: CYAN, fontSize: 14, fontFamily: 'monospace', fontWeight: 700 }}>
-              📝 {answers.length} / {TARGET_QUESTIONS}
+              📝 第 {answers.length + 1} 题
             </span>
           </div>
 
@@ -1254,648 +1420,45 @@ const ResumeRoast = () => {
 
       {/* ═══ reporting ═══ */}
       {stage === 'reporting' && diagnosis && (
-        <div className="stage-card report-stage">
-          <div className="report-header">
-            <h2>🧠 认知诊断报告{isPrepDriven && <span style={{ color: MAGENTA, fontSize: 12, marginLeft: 8 }}>（面试准备驱动）</span>}</h2>
-            <div className="report-actions">
-              {isPrepDriven && !prepId?.startsWith('ext-') && (
-                <button
-                  onClick={handleBackToPrep}
-                  title="将诊断暴露的薄弱项反馈到面试准备文档，更新 Gap 清单并生成新题"
-                  style={{
-                    background: `linear-gradient(135deg, ${MAGENTA}30, ${MAGENTA}10)`,
-                    border: `2px solid ${MAGENTA}`, color: MAGENTA,
-                    padding: '10px 20px', borderRadius: 10, fontSize: 14, fontWeight: 700,
-                    cursor: 'pointer', animation: 'pulse 2s ease-in-out infinite',
-                  }}
-                >
-                  🔄 闭环优化面试准备
-                </button>
-              )}
-              {isPrepDriven && prepId?.startsWith('ext-') && (
-                <div style={{
-                  padding: '6px 12px', background: 'rgba(255,0,255,0.06)', borderRadius: 6,
-                  border: `1px solid ${MAGENTA}40`, fontSize: 11, color: MAGENTA, maxWidth: 320, lineHeight: 1.5,
-                }}>
-                  💡 外部文档导入模式 — 将诊断结果带回 Claude Code，用诊断暴露的弱项重新调整 Skill 的面试准备文档，实现人工闭环。
-                  {parsedSummary && <div style={{ marginTop: 4, color: DIM }}>📋 {parsedSummary}</div>}
-                </div>
-              )}
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                <button className="export-btn" onClick={handleSaveDiagnosis}
-                  style={{ background: `${GREEN}20`, borderColor: GREEN, color: GREEN, fontSize: 11, padding: '6px 12px' }}>💾 保存</button>
-                <button className="export-btn" onClick={() => exportDiagnosisToJSON(diagnosis, answers, difficulty)}
-                  style={{ fontSize: 11, padding: '6px 12px' }}>📄 JSON</button>
-                <button className="export-btn" onClick={() => exportDiagnosisToWord(diagnosis, answers, difficulty)}
-                  style={{ fontSize: 11, padding: '6px 12px' }}>📝 Word</button>
-                <button className="restart-btn-small" onClick={handleRestart}
-                  style={{ fontSize: 11, padding: '6px 12px' }}>🔄 重新开始</button>
-              </div>
-            </div>
-          </div>
-
-          {/* 总分 */}
-          <div style={{ display: 'flex', gap: 20, marginBottom: 24, flexWrap: 'wrap', justifyContent: 'center' }}>
-            <ScoreBox label="总分" value={diagnosis.overall_score} max={100} color={CYAN} />
-            <ScoreBox label="逻辑" value={diagnosis.logic_score} max={10} color={MAGENTA} />
-            <ScoreBox label="表达" value={diagnosis.communication_score} max={10} color={YELLOW} />
-            <ScoreBox label="深度" value={diagnosis.depth_score} max={10} color={GREEN} />
-          </div>
-
-          {/* 雷达 + 知识覆盖 */}
-          <div style={{ display: 'flex', gap: 24, marginBottom: 24, flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'center' }}>
-            <div style={{ border: '1px solid #333', padding: 12, background: BG, borderRadius: 4 }}>
-              <h3 style={{ color: CYAN, fontSize: 14, marginBottom: 8, fontFamily: 'monospace' }}>📡 知识雷达</h3>
-              <div style={{ display: 'flex', gap: 16, marginBottom: 8, fontSize: 11, fontFamily: 'monospace' }}>
-                <span style={{ color: CYAN }}>── 覆盖度</span>
-                <span style={{ color: MAGENTA }}>- - 深度</span>
-              </div>
-              <RadarChart data={diagnosis.radar_data} />
-            </div>
-
-            <div style={{ flex: 1, minWidth: 260 }}>
-              <h3 style={{ color: CYAN, fontSize: 14, marginBottom: 8, fontFamily: 'monospace' }}>📋 知识覆盖详情</h3>
-              {diagnosis.knowledge_map.map(kp => (
-                <div key={kp.name} style={{ marginBottom: 10, border: '1px solid #333', padding: 8, background: BG, borderRadius: 2 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontFamily: 'monospace' }}>
-                    <span style={{ color: '#fff', fontWeight: 'bold', fontSize: 13 }}>{kp.name}</span>
-                    <span style={{ fontSize: 11 }}>
-                      <span style={{ color: CYAN }}>覆盖 {Math.round(kp.coverage * 100)}%</span>
-                      <span style={{ margin: '0 6px', color: '#555' }}>|</span>
-                      <span style={{ color: MAGENTA }}>深度 {kp.depth_score}</span>
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
-                    <div style={{ flex: 1, height: 4, background: '#222' }}>
-                      <div style={{ width: `${kp.coverage * 100}%`, height: 4, background: CYAN }} />
-                    </div>
-                    <div style={{ flex: 1, height: 4, background: '#222' }}>
-                      <div style={{ width: `${(kp.depth_score / 10) * 100}%`, height: 4, background: MAGENTA }} />
-                    </div>
-                  </div>
-                  {kp.missing_concepts.length > 0 && (
-                    <div style={{ fontSize: 11, color: '#ff6666', fontFamily: 'monospace' }}>
-                      ⚠ 缺失：{kp.missing_concepts.join('、')}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* 时间线 */}
-          <div style={{ border: '1px solid #333', padding: 12, marginBottom: 24, background: BG, borderRadius: 4 }}>
-            <h3 style={{ color: CYAN, fontSize: 14, marginBottom: 8, fontFamily: 'monospace' }}>📈 得分时间线</h3>
-            <div style={{ display: 'flex', gap: 16, fontSize: 11, marginBottom: 8, fontFamily: 'monospace' }}>
-              <span style={{ color: CYAN }}>── 总分</span>
-              <span style={{ color: MAGENTA }}>- - 逻辑</span>
-              <span style={{ color: YELLOW }}>- - 表达</span>
-            </div>
-            <Timeline data={diagnosis.timeline_data} />
-          </div>
-
-          {/* 优劣势 + 改进 */}
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-            <div style={{ flex: 1, minWidth: 180, border: '1px solid #333', padding: 12, background: BG, borderRadius: 4 }}>
-              <h3 style={{ color: GREEN, fontSize: 14, marginBottom: 8, fontFamily: 'monospace' }}>✅ 优势</h3>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.8, fontFamily: 'monospace', color: '#ccc' }}>
-                {diagnosis.strengths.map((s, i) => <li key={i}>{s}</li>)}
-              </ul>
-            </div>
-            <div style={{ flex: 1, minWidth: 180, border: '1px solid #333', padding: 12, background: BG, borderRadius: 4 }}>
-              <h3 style={{ color: '#ff6666', fontSize: 14, marginBottom: 8, fontFamily: 'monospace' }}>❌ 短板</h3>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.8, fontFamily: 'monospace', color: '#ccc' }}>
-                {diagnosis.weaknesses.map((w, i) => <li key={i}>{w}</li>)}
-              </ul>
-            </div>
-            <div style={{ flex: 1, minWidth: 180, border: '1px solid #333', padding: 12, background: BG, borderRadius: 4 }}>
-              <h3 style={{ color: YELLOW, fontSize: 14, marginBottom: 8, fontFamily: 'monospace' }}>💡 改进路径</h3>
-              <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.8, fontFamily: 'monospace', color: '#ccc' }}>
-                {diagnosis.improvement_plan.map((s, i) => <li key={i}>{s}</li>)}
-              </ol>
-            </div>
-          </div>
-
-          {/* 每题详情 */}
-          <div style={{ marginTop: 24, border: '1px solid #333', padding: 12, background: BG, borderRadius: 4 }}>
-            <h3 style={{ color: CYAN, fontSize: 14, marginBottom: 12, fontFamily: 'monospace' }}>📝 每题详细</h3>
-            {answers.map((a, i) => (
-              <div key={a.questionId} style={{ marginBottom: 16, padding: 10, border: '1px solid #222', borderRadius: 2, background: '#0d0d0d' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <span style={{ fontFamily: 'monospace', fontWeight: 'bold', color: '#fff', fontSize: 13 }}>Q{i + 1}</span>
-                  <span className={`q-score-tag ${getScoreColor(a.evaluation.score)}`}
-                    style={{ fontFamily: 'monospace', fontSize: 12, padding: '2px 8px', borderRadius: 2 }}>
-                    {a.evaluation.score}分 {getScoreLabel(a.evaluation.score)}
-                  </span>
-                </div>
-                <div style={{ fontSize: 12, color: '#999', marginBottom: 6, fontFamily: 'monospace', maxHeight: 60, overflow: 'hidden' }}>
-                  {a.questionText.slice(0, 200)}...
-                </div>
-                <div style={{ fontSize: 12, color: '#ccc', marginBottom: 6, fontFamily: 'monospace', maxHeight: 80, overflow: 'hidden' }}>
-                  <span style={{ color: '#888' }}>你的回答：</span>{a.answer.slice(0, 300)}
-                </div>
-                <div style={{ fontSize: 11, color: CYAN, fontFamily: 'monospace' }}>💬 {a.evaluation.comment}</div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <ReportStage
+          diagnosis={diagnosis}
+          answers={answers}
+          isPrepDriven={isPrepDriven}
+          prepId={prepId}
+          parsedSummary={parsedSummary}
+          difficulty={difficulty}
+          onSaveDiagnosis={handleSaveDiagnosis}
+          onBackToPrep={handleBackToPrep}
+          onRestart={handleRestart}
+        />
       )}
 
       {/* ── 导入确认对话框 ── */}
       {importConfirmPrep && (
-        <div
-          onClick={() => { setImportConfirmPrep(null); setDialogResumeText(''); setDialogResumeFile(''); }}
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.7)', display: 'flex',
-            alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-            overflow: 'auto',
-          }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              background: '#0a0e14', border: `1px solid ${GREEN}`,
-              borderRadius: 12, padding: 24, maxWidth: 540, width: '95%',
-              maxHeight: '90vh', overflow: 'auto',
-              boxShadow: `0 0 30px ${GREEN}40`,
-            }}
-          >
-            <h3 style={{ margin: '0 0 16px', color: GREEN, fontSize: 16 }}>
-              📥 确认导入面试准备文档
-            </h3>
-            <div style={{
-              background: 'rgba(34,255,34,0.05)', border: `1px solid ${GREEN}30`,
-              borderRadius: 8, padding: 14, marginBottom: 16,
-            }}>
-              <div style={{ fontWeight: 600, color: '#fff', marginBottom: 8, fontSize: 14 }}>
-                📋 {importConfirmPrep.meta.role_name} @ {importConfirmPrep.meta.company_name || '未知公司'}
-              </div>
-              <div style={{ fontSize: 12, color: DIM, lineHeight: 1.6 }}>
-                <div>📅 生成于：{new Date(importConfirmPrep.meta.generated_at).toLocaleString('zh-CN')}</div>
-                <div>🎯 方向：{importConfirmPrep.meta.direction === 'E' ? 'AI产品' : 'AI全栈开发'}</div>
-                <div>📊 难度：{importConfirmPrep.meta.difficulty}</div>
-                <div>💾 保存于：{new Date(importConfirmPrep.savedAt).toLocaleDateString('zh-CN')}</div>
-              </div>
-            </div>
-            <p style={{ color: '#ccc', fontSize: 13, lineHeight: 1.6, margin: '0 0 16px' }}>
-              确认使用此文档启动针对性面试？系统将基于该文档的预测题库和 Gap 清单出题。
-            </p>
-
-            {/* ── 简历导入区（可选）── */}
-            <div style={{
-              background: 'rgba(0,240,255,0.03)', border: `1px solid ${CYAN}25`,
-              borderRadius: 10, padding: 16, marginBottom: 16,
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <label style={{ fontSize: 13, fontWeight: 600, color: CYAN }}>
-                  📄 是否导入简历？<span style={{ fontSize: 11, color: DIM, fontWeight: 400 }}>（可选，可提升题目匹配精准度）</span>
-                </label>
-                {dialogResumeText && (
-                  <button
-                    onClick={() => { setDialogResumeText(''); setDialogResumeFile(''); }}
-                    style={{
-                      padding: '2px 8px', background: 'transparent', border: `1px solid ${DIM}`,
-                      color: DIM, borderRadius: 4, fontSize: 10, cursor: 'pointer',
-                    }}
-                  >
-                    清除
-                  </button>
-                )}
-              </div>
-              <textarea
-                value={dialogResumeText}
-                onChange={e => { setDialogResumeText(e.target.value); if (e.target.value.trim()) setDialogResumeFile('粘贴文本'); else setDialogResumeFile(''); }}
-                placeholder="粘贴简历内容（可选）..."
-                rows={3}
-                style={{
-                  width: '100%', background: CARD, border: `1px solid ${BORDER}`,
-                  color: '#fff', padding: 10, borderRadius: 8, fontSize: 12, resize: 'vertical',
-                  fontFamily: 'monospace', boxSizing: 'border-box',
-                }}
-              />
-              <div
-                onDragOver={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingDialogResume(true); }}
-                onDragLeave={e => { e.preventDefault(); e.stopPropagation(); setIsDraggingDialogResume(false); }}
-                onDrop={e => {
-                  e.preventDefault(); e.stopPropagation(); setIsDraggingDialogResume(false);
-                  const file = e.dataTransfer.files?.[0];
-                  if (file) {
-                    processFile(file).then(text => {
-                      setDialogResumeText(text);
-                      setDialogResumeFile(file.name);
-                    });
-                  }
-                }}
-                style={{
-                  border: `1px dashed ${isDraggingDialogResume ? CYAN : dialogResumeText ? GREEN : BORDER}`,
-                  borderRadius: 8, padding: 8, textAlign: 'center', marginTop: 8,
-                  color: DIM, fontSize: 11, cursor: 'pointer',
-                  background: isDraggingDialogResume ? 'rgba(0,240,255,0.05)' : dialogResumeText ? 'rgba(34,255,34,0.03)' : 'transparent',
-                  transition: 'border-color 0.2s',
-                }}
-                onClick={() => document.getElementById('dialogResumeFileInput')?.click()}
-              >
-                {dialogResumeText ? (
-                  <span style={{ color: GREEN }}>✅ 已加载：{dialogResumeFile}（{dialogResumeText.length.toLocaleString()} 字符）</span>
-                ) : (
-                  <span>📎 拖拽简历文件（PDF/DOCX/图片/TXT）或点击上传 — 可跳过</span>
-                )}
-                <input
-                  id="dialogResumeFileInput"
-                  type="file"
-                  accept=".pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp,.txt,.md"
-                  hidden
-                  onChange={e => {
-                    const file = e.target.files?.[0];
-                    e.target.value = '';
-                    if (file) {
-                      processFile(file).then(text => {
-                        setDialogResumeText(text);
-                        setDialogResumeFile(file.name);
-                      });
-                    }
-                  }}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => { setImportConfirmPrep(null); setDialogResumeText(''); setDialogResumeFile(''); }}
-                style={{
-                  padding: '8px 16px', background: 'transparent',
-                  border: `1px solid ${DIM}`, color: DIM,
-                  borderRadius: 6, fontSize: 13, cursor: 'pointer',
-                }}
-              >
-                取消
-              </button>
-              <button
-                onClick={() => {
-                  const resumeToUse = dialogResumeText.trim();
-                  setDialogResumeText('');
-                  setDialogResumeFile('');
-                  setImportConfirmPrep(null);
-                  handleUseSavedPrep(importConfirmPrep, resumeToUse);
-                }}
-                disabled={isLoading}
-                style={{
-                  padding: '8px 16px', background: GREEN, border: 'none',
-                  color: '#000', borderRadius: 6, fontSize: 13, fontWeight: 700,
-                  cursor: 'pointer',
-                }}
-              >
-                {isLoading ? '⏳ 启动中...' : dialogResumeText.trim() ? '✅ 导入简历并开始' : '⏭ 跳过简历，直接开始'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ImportConfirmDialog
+          prep={importConfirmPrep}
+          isLoading={isLoading}
+          onConfirm={handleUseSavedPrep}
+          onCancel={() => setImportConfirmPrep(null)}
+        />
       )}
 
       {/* ── 查看面试准备文档模态框 ── */}
       {viewingPrep && (
-        <div
-          onClick={() => setViewingPrep(null)}
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.7)', display: 'flex',
-            alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-          }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              background: '#0a0e14', border: `1px solid ${CYAN}`,
-              borderRadius: 12, padding: 0, maxWidth: 720, width: '95%',
-              maxHeight: '85vh', display: 'flex', flexDirection: 'column',
-              boxShadow: `0 0 30px ${CYAN}40`,
-            }}
-          >
-            {/* 头部 */}
-            <div style={{
-              padding: '16px 20px', borderBottom: `1px solid ${BORDER}`,
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            }}>
-              <div>
-                <h3 style={{ margin: 0, color: CYAN, fontSize: 16 }}>
-                  👁 面试准备文档预览
-                </h3>
-                <div style={{ fontSize: 12, color: DIM, marginTop: 4 }}>
-                  {viewingPrep.meta.role_name} @ {viewingPrep.meta.company_name || '未知公司'}
-                </div>
-              </div>
-              <button
-                onClick={() => setViewingPrep(null)}
-                style={{
-                  padding: '4px 12px', background: 'transparent',
-                  border: `1px solid ${DIM}`, color: DIM,
-                  borderRadius: 6, fontSize: 11, cursor: 'pointer',
-                }}
-              >
-                ✕ 关闭
-              </button>
-            </div>
-
-            {/* 内容滚动区 */}
-            <div style={{ padding: 20, overflowY: 'auto', flex: 1 }}>
-              {/* 基本信息 */}
-              <div style={{
-                background: 'rgba(0,240,255,0.05)', border: `1px solid ${CYAN}30`,
-                borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 12, color: '#ddd',
-              }}>
-                <div><strong style={{ color: CYAN }}>岗位：</strong>{viewingPrep.meta.role_name}</div>
-                <div><strong style={{ color: CYAN }}>公司：</strong>{viewingPrep.meta.company_name || '未指定'}</div>
-                <div><strong style={{ color: CYAN }}>方向：</strong>{viewingPrep.meta.direction === 'E' ? 'AI产品' : 'AI全栈开发'}</div>
-                <div><strong style={{ color: CYAN }}>难度：</strong>{viewingPrep.meta.difficulty}</div>
-                <div><strong style={{ color: CYAN }}>生成时间：</strong>{viewingPrep.meta.generated_at}</div>
-              </div>
-
-              {/* 公司调研 */}
-              {viewingPrep.company_research && (
-                <div style={{ marginBottom: 16 }}>
-                  <h4 style={{ color: CYAN, fontSize: 14, marginBottom: 8 }}>一、公司调研</h4>
-                  <div style={{ fontSize: 12, color: '#ddd', lineHeight: 1.7, marginBottom: 8 }}>
-                    <strong>公司概况：</strong>{viewingPrep.company_research.company_overview || '暂无'}
-                  </div>
-                  {viewingPrep.company_research.key_focus_areas && viewingPrep.company_research.key_focus_areas.length > 0 && (
-                    <div style={{ fontSize: 12, color: '#ddd', marginBottom: 8 }}>
-                      <strong>重点关注：</strong>
-                      <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
-                        {viewingPrep.company_research.key_focus_areas.map((a, i) => <li key={i}>{a}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* JD 分析 */}
-              {viewingPrep.jd_analysis && (
-                <div style={{ marginBottom: 16 }}>
-                  <h4 style={{ color: CYAN, fontSize: 14, marginBottom: 8 }}>二、JD 分析</h4>
-                  {viewingPrep.jd_analysis.core_requirements && viewingPrep.jd_analysis.core_requirements.length > 0 && (
-                    <div style={{ fontSize: 12, color: '#ddd', marginBottom: 8 }}>
-                      <strong>核心要求：</strong>
-                      <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
-                        {viewingPrep.jd_analysis.core_requirements.map((r, i) => <li key={i}>{r}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* 自我介绍 */}
-              {viewingPrep.self_intro && viewingPrep.self_intro.script && (
-                <div style={{ marginBottom: 16 }}>
-                  <h4 style={{ color: CYAN, fontSize: 14, marginBottom: 8 }}>三、自我介绍（{viewingPrep.self_intro.duration_seconds || 90}秒）</h4>
-                  <div style={{
-                    background: 'rgba(0,240,255,0.04)', border: `1px solid ${CYAN}30`,
-                    borderRadius: 6, padding: 10, fontSize: 12, color: '#ddd',
-                    lineHeight: 1.7, whiteSpace: 'pre-wrap', fontStyle: 'italic',
-                  }}>
-                    {viewingPrep.self_intro.script}
-                  </div>
-                </div>
-              )}
-
-              {/* 高频题 */}
-              {viewingPrep.predicted_questions && viewingPrep.predicted_questions.length > 0 && (
-                <div style={{ marginBottom: 16 }}>
-                  <h4 style={{ color: CYAN, fontSize: 14, marginBottom: 8 }}>四、高频题预测（{viewingPrep.predicted_questions.length}题）</h4>
-                  <ol style={{ fontSize: 12, color: '#ddd', lineHeight: 1.7, paddingLeft: 20 }}>
-                    {viewingPrep.predicted_questions.slice(0, 10).map((q, i) => (
-                      <li key={i} style={{ marginBottom: 4 }}>
-                        {q.question}
-                        {q.category && <span style={{ color: DIM, marginLeft: 6 }}>[{q.category}]</span>}
-                      </li>
-                    ))}
-                    {viewingPrep.predicted_questions.length > 10 && (
-                      <li style={{ color: DIM, fontStyle: 'italic' }}>
-                        ...还有 {viewingPrep.predicted_questions.length - 10} 题
-                      </li>
-                    )}
-                  </ol>
-                </div>
-              )}
-
-              {/* Gap 分析 */}
-              {viewingPrep.gap_analysis && (
-                <div style={{ marginBottom: 16 }}>
-                  <h4 style={{ color: CYAN, fontSize: 14, marginBottom: 8 }}>五、差距分析</h4>
-                  {viewingPrep.gap_analysis.weaknesses && viewingPrep.gap_analysis.weaknesses.length > 0 && (
-                    <div style={{ fontSize: 12, color: '#ddd', marginBottom: 8 }}>
-                      <strong style={{ color: '#ff8888' }}>薄弱点：</strong>
-                      <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
-                        {viewingPrep.gap_analysis.weaknesses.map((w, i) => <li key={i}>{w}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                  {viewingPrep.gap_analysis.mitigation_strategies && viewingPrep.gap_analysis.mitigation_strategies.length > 0 && (
-                    <div style={{ fontSize: 12, color: '#ddd' }}>
-                      <strong style={{ color: GREEN }}>应对策略：</strong>
-                      <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
-                        {viewingPrep.gap_analysis.mitigation_strategies.map((s, i) => <li key={i}>{s}</li>)}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* 反问清单 */}
-              {viewingPrep.ask_back_questions && viewingPrep.ask_back_questions.length > 0 && (
-                <div style={{ marginBottom: 16 }}>
-                  <h4 style={{ color: CYAN, fontSize: 14, marginBottom: 8 }}>六、反问问题清单</h4>
-                  <ol style={{ fontSize: 12, color: '#ddd', lineHeight: 1.7, paddingLeft: 20 }}>
-                    {viewingPrep.ask_back_questions.map((q, i) => <li key={i} style={{ marginBottom: 4 }}>{q}</li>)}
-                  </ol>
-                </div>
-              )}
-            </div>
-
-            {/* 底部操作 */}
-            <div style={{
-              padding: '12px 20px', borderTop: `1px solid ${BORDER}`,
-              display: 'flex', gap: 8, justifyContent: 'flex-end',
-            }}>
-              <button
-                onClick={() => { setViewingPrep(null); setImportConfirmPrep(viewingPrep); }}
-                disabled={isLoading}
-                style={{
-                  padding: '8px 16px', background: GREEN, border: 'none',
-                  color: '#000', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer',
-                }}
-              >
-                🚀 使用此文档
-              </button>
-            </div>
-          </div>
-        </div>
+        <ViewPrepModal
+          prep={viewingPrep}
+          isLoading={isLoading}
+          onClose={() => setViewingPrep(null)}
+          onUsePrep={(prep) => setImportConfirmPrep(prep)}
+        />
       )}
 
       {/* ── 查看诊断报告弹窗 ── */}
       {viewingDiagnosis && (
-        <div
-          onClick={() => setViewingDiagnosis(null)}
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.8)', display: 'flex',
-            alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-          }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              background: '#0a0e14', border: `1px solid ${CYAN}`,
-              borderRadius: 12, padding: 0, maxWidth: 700, width: '95%',
-              maxHeight: '85vh', display: 'flex', flexDirection: 'column',
-              boxShadow: `0 0 30px ${CYAN}40`,
-            }}
-          >
-            {/* 头部 */}
-            <div style={{
-              padding: '16px 20px', borderBottom: `1px solid ${BORDER}`,
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            }}>
-              <div>
-                <h3 style={{ margin: 0, color: CYAN, fontSize: 16 }}>🧠 认知诊断报告</h3>
-                <div style={{ fontSize: 12, color: DIM, marginTop: 2 }}>
-                  {viewingDiagnosis.isPrepDriven ? '🎯 准备驱动' : '🤖 Agent模式'} · {viewingDiagnosis.questionCount}题 · 保存于 {new Date(viewingDiagnosis.savedAt).toLocaleString('zh-CN')}
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button onClick={() => exportDiagnosisToJSON(viewingDiagnosis.diagnosis, viewingDiagnosis.answers, viewingDiagnosis.difficulty)} style={{
-                  padding: '4px 10px', background: 'transparent', border: `1px solid ${CYAN}`,
-                  color: CYAN, borderRadius: 6, fontSize: 10, cursor: 'pointer',
-                }}>📄 JSON</button>
-                <button onClick={() => exportDiagnosisToWord(viewingDiagnosis.diagnosis, viewingDiagnosis.answers, viewingDiagnosis.difficulty)} style={{
-                  padding: '4px 10px', background: 'transparent', border: `1px solid ${GREEN}`,
-                  color: GREEN, borderRadius: 6, fontSize: 10, cursor: 'pointer',
-                }}>📝 Word</button>
-                <button onClick={() => setViewingDiagnosis(null)} style={{
-                  padding: '4px 12px', background: 'transparent', border: `1px solid ${DIM}`,
-                  color: DIM, borderRadius: 6, fontSize: 11, cursor: 'pointer',
-                }}>✕ 关闭</button>
-              </div>
-            </div>
-
-            {/* 内容 */}
-            <div style={{ padding: 20, overflowY: 'auto', flex: 1 }}>
-              {/* 总分 */}
-              <div style={{ display: 'flex', gap: 16, marginBottom: 20, flexWrap: 'wrap', justifyContent: 'center' }}>
-                <ScoreBox label="总分" value={viewingDiagnosis.diagnosis.overall_score} max={100} color={CYAN} />
-                <ScoreBox label="逻辑" value={viewingDiagnosis.diagnosis.logic_score} max={10} color={MAGENTA} />
-                <ScoreBox label="表达" value={viewingDiagnosis.diagnosis.communication_score} max={10} color={YELLOW} />
-                <ScoreBox label="深度" value={viewingDiagnosis.diagnosis.depth_score} max={10} color={GREEN} />
-              </div>
-
-              {/* 优势 / 短板 / 改进 */}
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
-                <div style={{ flex: 1, minWidth: 180, border: `1px solid ${GREEN}40`, padding: 12, background: 'rgba(34,255,34,0.03)', borderRadius: 8 }}>
-                  <h4 style={{ color: GREEN, fontSize: 13, margin: '0 0 8px' }}>✅ 优势</h4>
-                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: '#ccc', lineHeight: 1.7 }}>
-                    {viewingDiagnosis.diagnosis.strengths.map((s, i) => <li key={i}>{s}</li>)}
-                  </ul>
-                </div>
-                <div style={{ flex: 1, minWidth: 180, border: `1px solid ${RED}40`, padding: 12, background: 'rgba(255,68,68,0.03)', borderRadius: 8 }}>
-                  <h4 style={{ color: RED, fontSize: 13, margin: '0 0 8px' }}>❌ 短板</h4>
-                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, color: '#ccc', lineHeight: 1.7 }}>
-                    {viewingDiagnosis.diagnosis.weaknesses.map((w, i) => <li key={i}>{w}</li>)}
-                  </ul>
-                </div>
-              </div>
-
-              {/* 改进路径 */}
-              <div style={{ border: `1px solid ${YELLOW}40`, padding: 12, background: 'rgba(255,255,0,0.03)', borderRadius: 8, marginBottom: 16 }}>
-                <h4 style={{ color: YELLOW, fontSize: 13, margin: '0 0 8px' }}>💡 改进路径</h4>
-                <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: '#ccc', lineHeight: 1.8 }}>
-                  {viewingDiagnosis.diagnosis.improvement_plan.map((s, i) => <li key={i}>{s}</li>)}
-                </ol>
-              </div>
-
-              {/* 知识覆盖 */}
-              <div style={{ marginBottom: 16 }}>
-                <h4 style={{ color: CYAN, fontSize: 13, margin: '0 0 8px' }}>📋 知识覆盖</h4>
-                {viewingDiagnosis.diagnosis.knowledge_map.map(kp => (
-                  <div key={kp.name} style={{ marginBottom: 8, fontSize: 12 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                      <span style={{ color: '#fff' }}>{kp.name}</span>
-                      <span style={{ color: DIM }}>
-                        覆盖 {Math.round(kp.coverage * 100)}% · 深度 {kp.depth_score}
-                      </span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      <div style={{ flex: 1, height: 4, background: '#222' }}>
-                        <div style={{ width: `${kp.coverage * 100}%`, height: 4, background: CYAN }} />
-                      </div>
-                      <div style={{ flex: 1, height: 4, background: '#222' }}>
-                        <div style={{ width: `${(kp.depth_score / 10) * 100}%`, height: 4, background: MAGENTA }} />
-                      </div>
-                    </div>
-                    {kp.missing_concepts.length > 0 && (
-                      <div style={{ fontSize: 11, color: '#ff6666', marginTop: 2 }}>
-                        ⚠ {kp.missing_concepts.join('、')}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* 每题详情 */}
-              <div>
-                <h4 style={{ color: CYAN, fontSize: 13, margin: '0 0 8px' }}>📝 每题详情</h4>
-                {viewingDiagnosis.answers.map((a, i) => (
-                  <div key={i} style={{ marginBottom: 10, padding: 8, border: '1px solid #222', borderRadius: 4, background: '#0d0d0d' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                      <span style={{ fontSize: 11, color: '#fff', fontWeight: 600 }}>Q{i + 1} · {a.evaluation.score}分</span>
-                      <span style={{ fontSize: 10, color: DIM }}>{a.questionText.slice(0, 60)}...</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: CYAN }}>💬 {a.evaluation.comment}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* 闭环操作 */}
-              {viewingDiagnosis.isPrepDriven && (
-                <div style={{
-                  marginTop: 16, padding: 14, background: 'rgba(255,0,255,0.06)',
-                  border: `2px solid ${MAGENTA}60`, borderRadius: 10, fontSize: 12, color: '#ccc',
-                  lineHeight: 1.6,
-                }}>
-                  <div style={{ color: MAGENTA, fontWeight: 700, marginBottom: 8, fontSize: 13 }}>
-                    🔄 闭环优化
-                  </div>
-                  <p style={{ margin: '0 0 12px', color: '#ccc' }}>
-                    将诊断暴露的薄弱项反馈到面试准备文档：更新 Gap 清单、生成针对性新题、优化自我介绍。
-                  </p>
-                  <button
-                    onClick={() => {
-                      setViewingDiagnosis(null);
-                      navigate('/prep', {
-                        state: {
-                          prepId: viewingDiagnosis.prepId,
-                          sessionId: viewingDiagnosis.sessionId,
-                          diagnosisCompleted: true,
-                          diagnosisData: viewingDiagnosis.diagnosis, // 携带完整诊断数据
-                        },
-                      });
-                    }}
-                    style={{
-                      width: '100%', padding: '10px 0', background: MAGENTA, color: '#fff',
-                      border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer',
-                    }}
-                  >
-                    🔄 闭环优化面试准备
-                  </button>
-                  {!viewingDiagnosis.prepId && (
-                    <p style={{ color: DIM, fontSize: 10, margin: '8px 0 0' }}>
-                      ⚠ 此诊断缺少关联的 prepId，无法定位面试准备文档。
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+        <ViewDiagnosisModal
+          diagnosis={viewingDiagnosis}
+          onClose={() => setViewingDiagnosis(null)}
+        />
       )}
 
       {/* ── Toast 提示 ── */}
